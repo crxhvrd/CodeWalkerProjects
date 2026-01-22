@@ -105,7 +105,7 @@ namespace CodeWalker.OIVInstaller
                 }
             }
 
-            // Process RPF entries in batches - one RPF at a time
+            // Process RPF entries - handle differently based on mode
             foreach (var kvp in rpfEntriesByPath)
             {
                 string rpfRelPath = kvp.Key;
@@ -116,6 +116,24 @@ namespace CodeWalker.OIVInstaller
                 {
                     progress?.Report($"RPF not found, skipping: {rpfRelPath}");
                     continue;
+                }
+
+                // For Vanilla mode: If this RPF is in the mods folder, just delete it entirely
+                // This is the simplest and most reliable way to restore vanilla state
+                if (mode == UninstallMode.Vanilla && rpfRelPath.StartsWith("mods\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    progress?.Report($"Deleting modded RPF: {rpfRelPath}");
+                    try
+                    {
+                        File.Delete(rpfPath);
+                        CleanupEmptyParents(Path.GetDirectoryName(rpfPath));
+                        continue; // Skip per-file processing
+                    }
+                    catch (Exception ex)
+                    {
+                        progress?.Report($"Error deleting RPF: {ex.Message}");
+                        // Fall through to per-file processing as fallback
+                    }
                 }
 
                 progress?.Report($"Processing RPF: {rpfRelPath} ({entries.Count} entries)");
