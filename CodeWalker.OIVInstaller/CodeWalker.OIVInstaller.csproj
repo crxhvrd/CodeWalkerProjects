@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>CW.ico</ApplicationIcon>
+    <AssemblyName>CodeWalker.OIVInstaller</AssemblyName>
+    <RootNamespace>CodeWalker.OIVInstaller</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWalker.Core\CodeWalker.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="CW.ico" />
+  </ItemGroup>
+
+</Project>

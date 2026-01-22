@@ -1578,12 +1578,33 @@ namespace CodeWalker.GameFiles
                     fstream.Position = parent.StartPos + ((long)entry.FileOffset * 512);
 
                     file.WriteNewArchive(bw, encryption);
+                    
+                    // After writing the new archive, refresh the entire parent chain headers
+                    // This ensures deeply nested RPF creation maintains correct entry sizes
+                    RefreshParentChainHeaders(bw, parent);
                 }
             }
 
 
             return file;
         }
+        
+        /// <summary>
+        /// Refreshes headers for all RPFs in the parent chain to ensure entry sizes are correct.
+        /// This is necessary after creating nested RPFs to maintain archive integrity.
+        /// </summary>
+        private static void RefreshParentChainHeaders(BinaryWriter bw, RpfFile rpf)
+        {
+            // Walk up the parent chain and rewrite each RPF's header
+            RpfFile current = rpf;
+            while (current != null)
+            {
+                current.EnsureAllEntries();
+                current.WriteHeader(bw);
+                current = current.Parent;
+            }
+        }
+
 
         public static RpfDirectoryEntry CreateDirectory(RpfDirectoryEntry dir, string name)
         {
