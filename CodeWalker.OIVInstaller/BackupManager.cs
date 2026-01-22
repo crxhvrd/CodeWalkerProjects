@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
 using System.Xml;
+using System.IO.Compression;
 using CodeWalker.GameFiles;
 
 namespace CodeWalker.OIVInstaller
@@ -19,14 +20,28 @@ namespace CodeWalker.OIVInstaller
 
     public class BackupManager
     {
-        private const string BACKUP_ROOT_NAME = "OIV_Uninstall_Data";
+        private const string BACKUP_ROOT_NAME = "OIV_CW_Uninstall_Data";
+
+
         public string GameFolder { get; private set; }
         public string BackupRoot { get; private set; }
+        private static string _debugLogPath;
 
         public BackupManager(string gameFolder)
         {
             GameFolder = gameFolder;
             BackupRoot = Path.Combine(GameFolder, BACKUP_ROOT_NAME);
+            
+            try 
+            {
+                string logDir = Path.Combine(GameFolder, "OIV_CW_Logs");
+                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+                _debugLogPath = Path.Combine(logDir, "uninstall.log");
+            }
+            catch 
+            { 
+                 _debugLogPath = Path.Combine(GameFolder, "uninstall_debug.log"); // Fallback
+            }
         }
 
         public BackupSession CreateSession(string packageName, string description, string version, bool isGen9)
@@ -59,10 +74,23 @@ namespace CodeWalker.OIVInstaller
                             results.Add(log);
                         }
                     }
-                    catch { /* Ignore invalid logs */ }
+                    catch (Exception ex)
+                    {
+                        FileLog($"Error loading log {logPath}: {ex}");
+                    }
                 }
             }
+            FileLog($"Found {results.Count} installed packages in {BackupRoot}");
             return results.OrderByDescending(x => x.InstallDate).ToList();
+        }
+        public static void FileLog(string message)
+        {
+            try
+            {
+                if (_debugLogPath != null)
+                    File.AppendAllText(_debugLogPath, $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+            }
+            catch { }
         }
 
 
@@ -314,13 +342,23 @@ namespace CodeWalker.OIVInstaller
                 }
                 else
                 {
-                    // File exists in vanilla -> Extract and Overwrite
-                    byte[] data = vFile.File.ExtractFile(vFile as RpfFileEntry);
+                    // File exists in vanilla -> Extract and Overwrite (with RSC7 header preserved)
+                    byte[] data = RpfFileHelper.ExtractFileRaw(vFile as RpfFileEntry);
+                    if (data != null && data.Length >= 4)
+                    {
+                        uint magic = BitConverter.ToUInt32(data, 0);
+                        FileLog($"[VanillaRestore] Extracted {vFileName}: {data.Length} bytes. RSC7 Magic: {(magic==0x37435352?"YES":"NO")}");
+                    }
+                    else
+                    {
+                        FileLog($"[VanillaRestore] Extracted {vFileName}: {data?.Length ?? 0} bytes. (Empty/Too small)");
+                    }
                     RpfFile.CreateFile(targetDir, vFileName, data, true);
                 }
             }
             catch (Exception ex)
             {
+                FileLog($"[VanillaRestore] Error: {ex}");
                 progress?.Report($"Error reading vanilla RPF {vanillaRpfPath}: {ex.Message}");
             }
         }
@@ -354,7 +392,7 @@ namespace CodeWalker.OIVInstaller
 
             try
             {
-                byte[] data = file.File.ExtractFile(file); // Keys must be initialized globally
+                byte[] data = RpfFileHelper.ExtractFileRaw(file as RpfFileEntry); // Preserve RSC7 header
                 string content = System.Text.Encoding.UTF8.GetString(data);
                 
                 if (content.Contains(contentChange))
@@ -376,7 +414,7 @@ namespace CodeWalker.OIVInstaller
 
             try
             {
-                byte[] data = file.File.ExtractFile(file);
+                byte[] data = RpfFileHelper.ExtractFileRaw(file as RpfFileEntry);
                 string content = System.Text.Encoding.UTF8.GetString(data);
                 var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None).ToList();
 
@@ -415,7 +453,7 @@ namespace CodeWalker.OIVInstaller
             try
             {
                 // Read
-                byte[] data = file.File.ExtractFile(file);
+                byte[] data = RpfFileHelper.ExtractFileRaw(file as RpfFileEntry);
                 string xmlContent = System.Text.Encoding.UTF8.GetString(data);
                 
                 var xmlDoc = new XmlDocument();
@@ -524,9 +562,24 @@ namespace CodeWalker.OIVInstaller
         private void RestoreFullRpfBackup(RpfDirectoryEntry dir, string fileName, string backupFolder, string backupPath)
         {
             string backupFile = Path.Combine(backupFolder, backupPath);
-            if (!File.Exists(backupFile)) return;
+            if (!File.Exists(backupFile))
+            {
+                FileLog($"[FullRestore] Warning: Backup file not found: {backupFile}");
+                return;
+            }
 
             byte[] data = File.ReadAllBytes(backupFile);
+            
+            if (data.Length >= 4)
+            {
+                uint magic = BitConverter.ToUInt32(data, 0);
+                FileLog($"[FullRestore] Restoring {fileName} from backup. Size: {data.Length}. RSC7 Magic: {(magic==0x37435352?"YES":"NO")}");
+            }
+            else
+            {
+                FileLog($"[FullRestore] Restoring {fileName} from backup. Size: {data.Length} (Too small for header)");
+            }
+
             RpfFile.CreateFile(dir, fileName, data, true);
         }
 
@@ -829,5 +882,243 @@ namespace CodeWalker.OIVInstaller
         public string AddedXml { get; set; }       // XML that was added
         public string RemovedXml { get; set; }     // XML that was removed
         public string Append { get; set; }         // Position: First/Last/Before/After
+    }
+    
+    /// <summary>
+    /// Helper class for extracting files from RPF with proper header preservation
+    /// </summary>
+    public static class RpfFileHelper
+    {
+        /// <summary>
+        /// Extracts raw file bytes from an RPF entry, preserving the RSC7 header for resource files.
+        /// This is essential for backup/restore to maintain the file type.
+        /// </summary>
+        public static byte[] ExtractFileRaw(RpfFileEntry entry)
+        {
+            if (entry == null) return null;
+            
+            try
+            {
+                string physicalPath = entry.File.GetPhysicalFilePath();
+                using (var br = new BinaryReader(File.OpenRead(physicalPath)))
+                {
+                    var result = ExtractFileRaw(entry, br, entry.File);
+                    
+                    // Debug: verify RSC7 header is present in result
+                    if (result != null && result.Length >= 4)
+                    {
+                        uint magic = BitConverter.ToUInt32(result, 0);
+                        System.Diagnostics.Debug.WriteLine($"[RpfFileHelper] Extracted {entry.Name}: {result.Length} bytes, RSC7={magic == 0x37435352}");
+                    }
+                    
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[RpfFileHelper] FALLBACK for {entry?.Name}: {ex.Message}");
+                // Fallback to regular ExtractFile if raw extraction fails
+                return entry.File.ExtractFile(entry);
+            }
+        }
+        
+        private static byte[] ExtractFileRaw(RpfFileEntry entry, BinaryReader br, RpfFile rpf)
+        {
+            br.BaseStream.Position = rpf.StartPos + ((long)entry.FileOffset * 512);
+
+            bool isResourceExt = IsResourceExtension(entry.Name);
+            
+            // Try extracting as Resource if it IS a resource entry, OR looks like one
+            if (entry is RpfResourceFileEntry || isResourceExt)
+            {
+                // Resource files: RSC7 header (16 bytes) + encrypted/compressed payload
+                // We need to preserve the header but decrypt the payload
+                long fileSize = entry is RpfBinaryFileEntry ? ((RpfBinaryFileEntry)entry).GetFileSize() : entry.FileSize; // Handle binary entry polymorphism
+                
+                if (fileSize <= 16) 
+                {
+                     // Too small to be a resource, fallback if it was speculatively a resource
+                     if (isResourceExt && !(entry is RpfResourceFileEntry)) goto TryBinary;
+                     return null;
+                }
+                
+                // Read the RSC7 header (16 bytes) - this is NOT encrypted
+                byte[] header = br.ReadBytes(16);
+                
+                // Verify it's an RSC7 header
+                uint magic = BitConverter.ToUInt32(header, 0);
+                if (magic != 0x37435352) // 'RSC7'
+                {
+                    BackupManager.FileLog($"[RpfFileHelper] Warning: {entry.Name} (Type: {entry.GetType().Name}) has non-standard magic 0x{magic:X}.");
+                    
+                    // Fallback to Binary Extraction
+                    br.BaseStream.Position -= 16; // Rewind
+                    byte[] binaryResult = ExtractBinary(entry, br, rpf);
+                    
+                    if (binaryResult != null && binaryResult.Length >= 4)
+                    {
+                        uint binMagic = BitConverter.ToUInt32(binaryResult, 0);
+                        if (binMagic == 0x37435352)
+                        {
+                            BackupManager.FileLog($"[RpfFileHelper] Recovered RSC7 header from binary payload for {entry.Name}.");
+                            return binaryResult;
+                        }
+                    }
+                    
+                    // If we still don't have RSC7 header, and it IS a Resource Entry, synthesize it!
+                    if (entry is RpfResourceFileEntry resEntry && binaryResult != null)
+                    {
+                        BackupManager.FileLog($"[RpfFileHelper] Synthesizing RSC7 header for {entry.Name} using flags.");
+                        
+                        byte[] syntheticHeader = new byte[16];
+                        BitConverter.GetBytes(0x37435352).CopyTo(syntheticHeader, 0); // RSC7
+                        BitConverter.GetBytes(1).CopyTo(syntheticHeader, 4); // Version (Default 1?)
+                        
+                        // Handle potential distinct flag types or casts
+                        uint sysFlags = (uint)resEntry.SystemFlags;
+                        uint gfxFlags = (uint)resEntry.GraphicsFlags;
+                        
+                        BitConverter.GetBytes(sysFlags).CopyTo(syntheticHeader, 8);
+                        BitConverter.GetBytes(gfxFlags).CopyTo(syntheticHeader, 12);
+                        
+                        // Overwrite existing garbage header if size permits (Resource FileSize includes header)
+                        if (binaryResult.Length >= 16)
+                        {
+                            Buffer.BlockCopy(syntheticHeader, 0, binaryResult, 0, 16);
+                            return binaryResult;
+                        }
+                        else
+                        {
+                            // Fail safe: Prepend if too small (unlikely)
+                            byte[] combined = new byte[16 + binaryResult.Length];
+                            Buffer.BlockCopy(syntheticHeader, 0, combined, 0, 16);
+                            Buffer.BlockCopy(binaryResult, 0, combined, 16, binaryResult.Length);
+                            return combined;
+                        }
+                    }
+                    
+                    return binaryResult; // Return best effort (headerless)
+                }
+                else
+                {
+                    BackupManager.FileLog($"[RpfFileHelper] Verified RSC7 header for {entry.Name} (Type: {entry.GetType().Name})");
+                }
+                
+                // Read the payload (after header)
+                int payloadLen = (int)fileSize - 16;
+                if (payloadLen < 0) return header;
+
+                byte[] payload = br.ReadBytes(payloadLen);
+                
+                // Decrypt the payload if needed
+                if (entry.IsEncrypted)
+                {
+                    if (rpf.IsAESEncrypted)
+                        payload = GTACrypto.DecryptAES(payload);
+                    else
+                        payload = GTACrypto.DecryptNG(payload, entry.Name, (uint)fileSize);
+                }
+                
+                // Combine header + decrypted payload (still compressed, which is what CreateFile expects)
+                byte[] result = new byte[16 + payload.Length];
+                Buffer.BlockCopy(header, 0, result, 0, 16);
+                Buffer.BlockCopy(payload, 0, result, 16, payload.Length);
+                
+                return result;
+            }
+
+            TryBinary:
+            return ExtractBinary(entry, br, rpf);
+        }
+        
+        private static byte[] ExtractBinary(RpfFileEntry entry, BinaryReader br, RpfFile rpf)
+        {
+            if (entry is RpfBinaryFileEntry binEntry)
+            {
+                // Binary files: may be encrypted/compressed
+                long fileSize = binEntry.GetFileSize();
+                if (fileSize <= 0) return null;
+                
+                byte[] rawBytes = br.ReadBytes((int)fileSize);
+                byte[] decr = rawBytes;
+                
+                if (binEntry.IsEncrypted)
+                {
+                    if (rpf.IsAESEncrypted)
+                        decr = GTACrypto.DecryptAES(rawBytes);
+                    else
+                        decr = GTACrypto.DecryptNG(rawBytes, binEntry.Name, binEntry.FileUncompressedSize);
+                }
+                
+                // If compressed (FileSize > 0), decompress
+                if (binEntry.FileSize > 0)
+                {
+                    decr = DecompressBytes(decr);
+                }
+                
+                return decr;
+            }
+            // If we are here with RpfResourceFileEntry, we need to treat it as Binary manually
+            else if (entry is RpfResourceFileEntry resEntry)
+            {
+                 // Resource entry fallback logic (if we rewound)
+                 // Treat as binary: Read all, decrypt, decompress?
+                 // But Resource Entries might handle encryption differently (Payload loop).
+                 // However, assuming standard Binary extraction works if we ignore header logic:
+                 
+                 // fileSize includes header? Yes.
+                 long fileSize = resEntry.FileSize;
+                 byte[] rawBytes = br.ReadBytes((int)fileSize);
+                 byte[] decr = rawBytes;
+                 
+                  if (resEntry.IsEncrypted)
+                {
+                    if (rpf.IsAESEncrypted)
+                        decr = GTACrypto.DecryptAES(rawBytes);
+                    else
+                        decr = GTACrypto.DecryptNG(rawBytes, resEntry.Name, (uint)fileSize);
+                }
+                // Resources are usually compressed? 
+                // Wait, ExtractFileRaw logic for Resource didn't decompress. It returned Decrypted Payload.
+                // Binary logic Decompresses.
+                
+                // If we want "Raw for Backup", we probably want Decompressed?
+                // CreateFile re-compresses.
+                
+                // We'll try DecompressBytes just in case.
+                decr = DecompressBytes(decr);
+                return decr;
+            }
+            
+            return entry.File.ExtractFile(entry);
+        }
+        
+        private static bool IsResourceExtension(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            string ext = Path.GetExtension(name).ToLowerInvariant();
+            return ext == ".ytd" || ext == ".ydr" || ext == ".yft" || ext == ".ydd" || 
+                   ext == ".ybn" || ext == ".ycd" || ext == ".ypt" || ext == ".ytyp" || 
+                   ext == ".ymap" || ext == ".yldb"; 
+        }
+
+        private static byte[] DecompressBytes(byte[] bytes)
+        {
+            try
+            {
+                using (var ds = new DeflateStream(new MemoryStream(bytes), CompressionMode.Decompress))
+                {
+                    using (var outstr = new MemoryStream())
+                    {
+                        ds.CopyTo(outstr);
+                        return outstr.ToArray();
+                    }
+                }
+            }
+            catch
+            {
+                return bytes; // Return original if decompression fails
+            }
+        }
     }
 }

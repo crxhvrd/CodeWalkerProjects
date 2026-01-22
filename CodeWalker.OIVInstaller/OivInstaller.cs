@@ -19,6 +19,7 @@ namespace CodeWalker.OIVInstaller
         public OivPackage Package { get; }
         
         private readonly Action<string> _logAction;
+        private StreamWriter _logWriter;
         private readonly Dictionary<string, RpfFile> _openRpfs = new Dictionary<string, RpfFile>(StringComparer.OrdinalIgnoreCase);
         private bool _keysInitialized = false;
         private BackupManager _backupManager;
@@ -45,6 +46,8 @@ namespace CodeWalker.OIVInstaller
 
         public void Install(IProgress<InstallProgress> progress = null, List<BackupLog> packagesToUninstall = null, UninstallMode uninstallMode = UninstallMode.Backup)
         {
+            InitializeLog();
+
             int totalOps = CountOperations(Package.Operations);
             int currentOp = 0;
 
@@ -100,6 +103,8 @@ namespace CodeWalker.OIVInstaller
                     // RPF files don't need explicit closing in CodeWalker's implementation
                 }
                 _openRpfs.Clear();
+                _logWriter?.Dispose();
+                _logWriter = null;
             }
         }
 
@@ -248,10 +253,11 @@ namespace CodeWalker.OIVInstaller
                 
                 // --- BACKUP LOGIC (RPF) ---
                 var existingFile = targetDir.Files?.FirstOrDefault(f => f.Name.Equals(destFileName, StringComparison.OrdinalIgnoreCase));
+                if (existingFile != null) Log($"  Backing up original file: {destFileName}");
                 if (existingFile != null)
                 {
-                    // It's a replacement - backup original
-                    byte[] oldData = existingFile.File.ExtractFile(existingFile as RpfFileEntry);
+                    // It's a replacement - backup original with RSC7 header preserved
+                    byte[] oldData = RpfFileHelper.ExtractFileRaw(existingFile as RpfFileEntry);
                     _backupSession.BackupRpfFile(rpf.Path, destPath, oldData); // destPath is internal RPF path
                 }
                 else
@@ -316,8 +322,8 @@ namespace CodeWalker.OIVInstaller
                 var file = targetDir.Files.FirstOrDefault(f => f.Name.Equals(fileName, StringComparison.OrdinalIgnoreCase));
                 if (file != null)
                 {
-                    // Backup before delete!
-                    byte[] originalData = file.File.ExtractFile(file as RpfFileEntry);
+                    // Backup before delete! (preserve RSC7 header for resource files)
+                    byte[] originalData = RpfFileHelper.ExtractFileRaw(file as RpfFileEntry);
                     _backupSession.BackupRpfDeletedFile(rpf.Path, targetPath, originalData);
                     
                     RpfFile.DeleteEntry(file);
@@ -408,6 +414,7 @@ namespace CodeWalker.OIVInstaller
                 // We need relative path for backup manager
                 
                 string relativeDestPath = fullDestPath.Substring(GameFolder.Length).TrimStart(Path.DirectorySeparatorChar);
+                Log($"  Backing up: {relativeDestPath}");
                 _backupSession.BackupFile(relativeDestPath);
                 // --------------------
 
@@ -520,7 +527,7 @@ namespace CodeWalker.OIVInstaller
                 // --- BACKUP LOGIC (Text) ---
                 if (fileEntry != null)
                 {
-                     byte[] originalBytes = fileEntry.File.ExtractFile(fileEntry);
+                     byte[] originalBytes = RpfFileHelper.ExtractFileRaw(fileEntry);
                      _backupSession.BackupRpfFile(rpf.Path, filePath, originalBytes, textOps: textOps);
                 }
                 // ---------------------------
@@ -734,7 +741,7 @@ namespace CodeWalker.OIVInstaller
                     // --- BACKUP LOGIC (XML) ---
                     if (fileEntry != null)
                     {
-                        byte[] originalBytes = fileEntry.File.ExtractFile(fileEntry);
+                        byte[] originalBytes = RpfFileHelper.ExtractFileRaw(fileEntry);
                         _backupSession.BackupRpfFile(rpf.Path, filePath, originalBytes, xmlOps: xmlOps);
                     }
                     // --------------------------
@@ -1167,6 +1174,7 @@ namespace CodeWalker.OIVInstaller
                         Log($"ERROR: Failed to create directory: {part}");
                         return null;
                     }
+                    Log($"  Created directory: {part}");
                 }
             }
             
@@ -1374,8 +1382,9 @@ namespace CodeWalker.OIVInstaller
                 // Write back to RPF
                 try
                 {
-                    // Backup original before replacing
-                    _backupSession.BackupRpfFile(rpf.Path, filePath, fileData, xmlOps: xmlOps);
+                    // Backup original before replacing (use raw extraction to preserve RSC7 header)
+                    byte[] originalRaw = RpfFileHelper.ExtractFileRaw(fileEntry);
+                    _backupSession.BackupRpfFile(rpf.Path, filePath, originalRaw, xmlOps: xmlOps);
                     
                     RpfFile.CreateFile(targetDir, fileName, newBytes, overwrite: true);
                     Log($"  Modified {fileName} in RPF ({newBytes.Length} bytes)");
@@ -1421,6 +1430,23 @@ namespace CodeWalker.OIVInstaller
         private void Log(string message)
         {
             _logAction?.Invoke(message);
+            try { _logWriter?.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}"); } catch { }
+        }
+
+        private void InitializeLog()
+        {
+            try
+            {
+                string logDir = Path.Combine(GameFolder, "OIV_CW_Logs");
+                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+                
+                string safeName = string.Join("_", Package.Metadata.Name.Split(Path.GetInvalidFileNameChars()));
+                string logFile = Path.Combine(logDir, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}_{safeName}.log");
+                
+                _logWriter = new StreamWriter(logFile, false, Encoding.UTF8) { AutoFlush = true };
+                _logWriter.WriteLine($"Log started for {Package.Metadata.Name} v{Package.Metadata.Version}");
+            }
+            catch { /* Ignore logging init failures */ }
         }
     }
 
@@ -1445,4 +1471,6 @@ namespace CodeWalker.OIVInstaller
         public StringWriterWithEncoding(Encoding encoding) { this.encoding = encoding; }
         public override Encoding Encoding => encoding;
     }
+    
+
 }

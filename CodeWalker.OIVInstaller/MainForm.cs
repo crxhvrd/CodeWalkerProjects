@@ -388,6 +388,18 @@ namespace CodeWalker.OIVInstaller
                 catch { }
             }
 
+            // Reset default theme (Standard Blue)
+            Color defaultBlue = Color.FromArgb(0, 120, 215);
+            linkAuthor.LinkColor = defaultBlue;
+            linkWeb.LinkColor = defaultBlue;
+            linkYoutube.LinkColor = defaultBlue;
+            btnInstall.ForeColor = Color.Black; 
+            btnInstall.FlatAppearance.BorderColor = Color.FromArgb(180, 180, 180);
+            panelHeader.BackColor = defaultBlue;
+            lblPackageName.ForeColor = Color.White;
+            lblAuthor.ForeColor = Color.White;
+            lblWarning.ForeColor = Color.White;
+
             // Apply header color if specified
             if (!string.IsNullOrEmpty(meta.HeaderBackground))
             {
@@ -397,13 +409,27 @@ namespace CodeWalker.OIVInstaller
                     if (colorStr.Length == 8)
                     {
                         int argb = Convert.ToInt32(colorStr, 16);
-                        panelHeader.BackColor = Color.FromArgb(argb);
+                        Color headerColor = Color.FromArgb(argb);
+                        panelHeader.BackColor = headerColor;
                         
                         Color textColor = meta.UseBlackTextColor ? Color.Black : Color.White;
                         lblPackageName.ForeColor = textColor;
                         lblAuthor.ForeColor = textColor;
                         lblWarning.ForeColor = Color.FromArgb(textColor.A, 
                             (int)(textColor.R * 0.8), (int)(textColor.G * 0.8), (int)(textColor.B * 0.8));
+                            
+                        // Apply dynamic theme to content controls (if Header is dark enough to be visible on white)
+                        // If UseBlackTextColor is FALSE, it means Header is Dark (White text used). 
+                        // Dark colors work well as text/accents on White backgrounds.
+                        if (!meta.UseBlackTextColor)
+                        {
+                            linkAuthor.LinkColor = headerColor;
+                            linkWeb.LinkColor = headerColor;
+                            linkYoutube.LinkColor = headerColor;
+                            
+                            btnInstall.ForeColor = headerColor;
+                            btnInstall.FlatAppearance.BorderColor = headerColor;
+                        }
                     }
                 }
                 catch { }

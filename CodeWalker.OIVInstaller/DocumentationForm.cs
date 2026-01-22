@@ -111,7 +111,7 @@ namespace CodeWalker.OIVInstaller
    - Text file editing (insert, replace, delete operations).
    - PSO/META editing inside RPF archives (YMT, YMF, YMAP, YTYP).
    - Nested RPF creation (createIfNotExist at any depth).
-   - Gen9 (Expanded & Enhanced) support.
+   - Supports GTA V Legacy & Enhanced (Gen9) Versions.
    - <gameversion> validation (Warns if package requires Enhanced/Legacy mismatch).
 
 ";
@@ -140,20 +140,18 @@ REMAINING TODO:
 1. Archive Management
    [ ] Implement actual 'Defragmentation' logic (currently a placeholder).
 
-2. Multi-Game Support
-   [ ] Test GTA IV / EFLC / Max Payne 3 archive formats (IMG3, RPF2-4).
-
-3. UI Improvements
+2. UI Improvements
    [ ] Display extended metadata (License, Social Media links) in the main window.
-   [ ] Add 'Dark Mode' or theme support based on OIV package colors.
+   [ ] Improved theme support based on OIV package colors (Use package metadata for backgrounds/accents).
 
-4. Core Features
+3. Core Features
    [ ] Add full transaction support for safer installations (rollback on crash).
    [ ] Validating 'Condition' attributes for file content more rigorously.
 
-5. Enhanced Installation Features
+4. Enhanced Installation Features
    [ ] Implement 'Enhanced' mod installation flow (Vortex-style).
        - Allow installing not only a single mod package but also choosing optional components.
+   [ ] Automatic dependencies installation (OpenIV.asi, OpenRPF.asi, ASI Loader).
 
 ";
         }
