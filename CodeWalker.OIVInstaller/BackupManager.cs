@@ -122,15 +122,18 @@ namespace CodeWalker.OIVInstaller
                 
                 try
                 {
-                    // Open RPF once for all operations
-                    var rpf = new RpfFile(rpfPath, Path.GetFileName(rpfPath));
-                    rpf.ScanStructure(null, null);
-
+                    // Process each entry with a fresh RPF scan
+                    // This is necessary because modifying an RPF changes its internal structure
                     foreach (var entry in entries)
                     {
                         try
                         {
                             progress?.Report($"  Reverting: {entry.InternalPath}");
+                            
+                            // Re-open and rescan RPF for each entry to avoid stale references
+                            var rpf = new RpfFile(rpfPath, Path.GetFileName(rpfPath));
+                            rpf.ScanStructure(null, null);
+                            
                             RevertRpfEntryBatched(rpf, entry, log.BackupFolderPath, progress, mode);
                         }
                         catch (Exception ex)
