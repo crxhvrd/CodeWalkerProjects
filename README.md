@@ -3,6 +3,10 @@
     This program is for viewing the contents of GTAV RPF archives.
 </div>
 
+# NEW: CodeWalker OIV Installer
+A standalone application included with CodeWalker for installing `.oiv` mod packages. It supports both **Legacy** and **Enhanced** editions of GTA V, features a **Smart Uninstall** system for clean removal of mods (including text/XML edits and Add-on DLCs), and handles OpenIV Package Format 2.2.
+
+
 ## Requirements:
 - PC version of GTA:V;
 - 4GB RAM (8+ recommended);
