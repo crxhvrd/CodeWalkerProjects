@@ -64,40 +64,84 @@ namespace CodeWalker.OIVInstaller
             }
             return results.OrderByDescending(x => x.InstallDate).ToList();
         }
-
-
     
         public void Uninstall(BackupLog log, IProgress<string> progress, UninstallMode mode = UninstallMode.Backup)
         {
-            // Process in reverse order to undo changes correctly
+            // Separate RPF entries from filesystem entries
+            var filesystemEntries = new List<FileBackupEntry>();
+            var rpfEntriesByPath = new Dictionary<string, List<FileBackupEntry>>(StringComparer.OrdinalIgnoreCase);
+
+            // Process entries in reverse order and group RPF entries by their parent RPF
             for (int i = log.Entries.Count - 1; i >= 0; i--)
             {
                 var entry = log.Entries[i];
-                string fullPath = Path.Combine(GameFolder, entry.OriginalPath);
+                if (entry.IsRpfContent)
+                {
+                    if (!rpfEntriesByPath.ContainsKey(entry.RpfPath))
+                        rpfEntriesByPath[entry.RpfPath] = new List<FileBackupEntry>();
+                    rpfEntriesByPath[entry.RpfPath].Add(entry);
+                }
+                else
+                {
+                    filesystemEntries.Add(entry);
+                }
+            }
 
+            // Process filesystem entries first (these don't have the batching issue)
+            foreach (var entry in filesystemEntries)
+            {
+                string fullPath = Path.Combine(GameFolder, entry.OriginalPath);
                 try
                 {
                     progress?.Report($"Reverting: {entry.OriginalPath}");
-                    
-                    if (entry.IsRpfContent)
-                    {
-                        RevertRpfEntry(entry, log.BackupFolderPath, progress, mode);
-                    }
+                    if (mode == UninstallMode.Vanilla)
+                        RestoreFileFromVanilla(entry, progress);
                     else
+                        RestoreFileFromBackup(entry, log.BackupFolderPath, fullPath, progress);
+                }
+                catch (Exception ex)
+                {
+                    progress?.Report($"Error reverting {entry.OriginalPath}: {ex.Message}");
+                }
+            }
+
+            // Process RPF entries in batches - one RPF at a time
+            foreach (var kvp in rpfEntriesByPath)
+            {
+                string rpfRelPath = kvp.Key;
+                var entries = kvp.Value;
+                
+                string rpfPath = Path.Combine(GameFolder, rpfRelPath);
+                if (!File.Exists(rpfPath))
+                {
+                    progress?.Report($"RPF not found, skipping: {rpfRelPath}");
+                    continue;
+                }
+
+                progress?.Report($"Processing RPF: {rpfRelPath} ({entries.Count} entries)");
+                
+                try
+                {
+                    // Open RPF once for all operations
+                    var rpf = new RpfFile(rpfPath, Path.GetFileName(rpfPath));
+                    rpf.ScanStructure(null, null);
+
+                    foreach (var entry in entries)
                     {
-                        if (mode == UninstallMode.Vanilla)
+                        try
                         {
-                            RestoreFileFromVanilla(entry, progress);
+                            progress?.Report($"  Reverting: {entry.InternalPath}");
+                            RevertRpfEntryBatched(rpf, entry, log.BackupFolderPath, progress, mode);
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            RestoreFileFromBackup(entry, log.BackupFolderPath, fullPath, progress);
+                            progress?.Report($"  Error reverting {entry.InternalPath}: {ex.Message}");
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    progress?.Report($"Error reverting {entry.OriginalPath}: {ex.Message}");
+                    progress?.Report($"Error opening RPF {rpfRelPath}: {ex.Message}");
                 }
             }
 
@@ -110,6 +154,7 @@ namespace CodeWalker.OIVInstaller
             }
             catch { }
         }
+
 
         private void RestoreFileFromBackup(FileBackupEntry entry, string backupFolderPath, string fullPath, IProgress<string> progress)
         {
@@ -255,7 +300,55 @@ namespace CodeWalker.OIVInstaller
                         RestoreFullRpfBackup(dir, fileName, backupFolder, entry.BackupPath);
                     }
                 }
-                else // Replaced
+                else // Replaced or Deleted
+                {
+                    RestoreFullRpfBackup(dir, fileName, backupFolder, entry.BackupPath);
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Reverts an RPF entry using an already-open RPF file (for batched operations)
+        /// </summary>
+        private void RevertRpfEntryBatched(RpfFile rpf, FileBackupEntry entry, string backupFolder, IProgress<string> progress, UninstallMode mode)
+        {
+            var internalDir = Path.GetDirectoryName(entry.InternalPath);
+            var fileName = Path.GetFileName(entry.InternalPath);
+            var dir = FindRpfDirectory(rpf, internalDir);
+            if (dir == null) return;
+
+            if (mode == UninstallMode.Vanilla)
+            {
+                 RestoreRpfFromVanilla(rpf, dir, entry, progress);
+            }
+            else
+            {
+                // Existing Backup Logic
+                if (entry.Action == BackupAction.Added)
+                {
+                    var file = dir.Files.FirstOrDefault(f => f.Name.Equals(fileName, StringComparison.OrdinalIgnoreCase));
+                    if (file != null) RpfFile.DeleteEntry(file);
+                }
+                else if (entry.Action == BackupAction.Edited)
+                {
+                    bool success = false;
+                    
+                    // Try smart text revert
+                    if (entry.TextOperations != null && entry.TextOperations.Count > 0)
+                        success = PerformSmartRpfTextRevert(dir, fileName, entry.TextOperations);
+                    // Try smart XML revert
+                    else if (entry.XmlOperations != null && entry.XmlOperations.Count > 0)
+                        success = PerformSmartRpfXmlRevert(dir, fileName, entry.XmlOperations);
+                    // Legacy check
+                    else if (!string.IsNullOrEmpty(entry.ContentChange))
+                        success = PerformSmartRpfRevert(dir, fileName, entry.ContentChange);
+
+                    if (!success)
+                    {
+                        RestoreFullRpfBackup(dir, fileName, backupFolder, entry.BackupPath);
+                    }
+                }
+                else // Replaced or Deleted
                 {
                     RestoreFullRpfBackup(dir, fileName, backupFolder, entry.BackupPath);
                 }
