@@ -2,10 +2,8 @@
 setlocal enabledelayedexpansion
 
 :: ============================================================================
-:: OIV Package Installer - Example Uninstall Script
+:: OIV Package Installer - Uninstall Script
 :: ============================================================================
-:: This script uses the .oiv file name to identify and uninstall the package.
-:: It extracts the real package name from the OIV metadata (via --uninstall-oiv).
 
 title OIV Package Uninstaller
 
@@ -13,19 +11,44 @@ title OIV Package Uninstaller
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-:: Find the OIV file to determine which package to uninstall
-set "OIV_FILE="
+:: -----------------------------------------------------------------------------
+:: Detect OIV files
+:: -----------------------------------------------------------------------------
+set "count=0"
 for %%f in ("%SCRIPT_DIR%\*.oiv") do (
-    set "OIV_FILE=%%f"
+    set /a count+=1
+    set "OIV_!count!=%%~nxf"
+    set "OIV_PATH_!count!=%%f"
 )
 
-if not defined OIV_FILE (
+if %count%==0 (
     echo ERROR: No .oiv file found in this folder.
-    echo This script needs the .oiv file to know which package to uninstall.
     pause
     exit /b 1
 )
 
+if %count%==1 (
+    set "OIV_FILE=!OIV_PATH_1!"
+    goto :file_selected
+)
+
+:: Multiple files found - ask user to choose
+echo Multiple OIV packages found:
+echo.
+for /L %%i in (1,1,%count%) do (
+    echo [%%i] !OIV_%%i!
+)
+echo.
+
+:ask_choice
+set /p "choice=Select package to uninstall (1-%count%): "
+if not defined choice goto ask_choice
+if %choice% LSS 1 goto ask_choice
+if %choice% GTR %count% goto ask_choice
+
+set "OIV_FILE=!OIV_PATH_%choice%!"
+
+:file_selected
 echo ============================================
 echo  OIV Package Uninstaller
 echo ============================================
@@ -36,7 +59,6 @@ echo.
 :: -----------------------------------------------------------------------------
 :: Locate the OIV Installer Executable
 :: -----------------------------------------------------------------------------
-
 set "INSTALLER="
 set "SEARCH_DIR=%SCRIPT_DIR%"
 
@@ -49,26 +71,19 @@ if exist "%SEARCH_DIR%\CodeWalker.OIVInstaller.exe" (
     set "INSTALLER=%SEARCH_DIR%\CodeWalker.OIVInstaller.exe"
     goto :found_installer
 )
-
 for %%i in ("%SEARCH_DIR%\..") do set "PARENT_DIR=%%~fi"
-if "%PARENT_DIR%"=="%SEARCH_DIR%" goto :check_local_appdata
+if "%PARENT_DIR%"=="%SEARCH_DIR%" goto :installer_not_found
 set "SEARCH_DIR=%PARENT_DIR%"
 goto :find_installer
 
-:check_local_appdata
-if exist "%LOCALAPPDATA%\CodeWalker.OIVInstaller\CodeWalker.OIVInstaller.exe" (
-    set "INSTALLER=%LOCALAPPDATA%\CodeWalker.OIVInstaller\CodeWalker.OIVInstaller.exe"
-    goto :found_installer
-)
-
 :installer_not_found
 echo ERROR: CodeWalker.OIVInstaller.exe not found!
+echo Please ensure the OIVInstaller folder exists.
 pause
 exit /b 1
 
 :found_installer
-:: Run uninstall using the OIV file path
-:: The installer will read the OIV metadata to get the correct package ID/name.
+:: Run the uninstaller with OIV path
 "%INSTALLER%" --uninstall-oiv "%OIV_FILE%"
 set "RESULT=%ERRORLEVEL%"
 
