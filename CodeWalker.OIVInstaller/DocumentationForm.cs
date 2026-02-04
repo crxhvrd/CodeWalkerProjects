@@ -130,7 +130,8 @@ namespace CodeWalker.OIVInstaller
 
    - Automation:
      If no game folder is set, CLI commands will open a folder picker dialog.
-     Batch scripts (Install.bat/Uninstall.bat) are included for easy automation.
+     Example batch scripts for automation are available in the repository:
+     https://github.com/crxhvrd/CodeWalkerProjects/tree/master
 ";
         }
 
