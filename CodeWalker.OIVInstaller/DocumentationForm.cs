@@ -86,6 +86,7 @@ namespace CodeWalker.OIVInstaller
 1. Installation
    - Drag and drop an .OIV file onto the window, or use the 'Browse OIV' button.
    - Select your GTA V game folder request.
+     (If no folder is configured, a Windows Folder Picker dialog will appear automatically).
    - Click 'Install'.
 
 2. Uninstalling & Conflicts
@@ -114,6 +115,22 @@ namespace CodeWalker.OIVInstaller
    - Supports GTA V Legacy & Enhanced (Gen9) Versions.
    - <gameversion> validation (Warns if package requires Enhanced/Legacy mismatch).
 
+6. Command Line Interface (CLI)
+   - The installer supports full automation via command line.
+   - Usage: CodeWalker.OIVInstaller.exe [options]
+   - Options:
+     --install <path>       Install an OIV package
+     --uninstall <name>     Uninstall a package by name
+     --uninstall-oiv <path> Uninstall by reading package name from OIV file
+     --list                 List installed packages
+     --set-game <path>      Set default game folder
+     --get-game             Get default game folder
+     --browse               Open folder picker to set game folder
+     --help                 Show all options
+
+   - Automation:
+     If no game folder is set, CLI commands will open a folder picker dialog.
+     Batch scripts (Install.bat/Uninstall.bat) are included for easy automation.
 ";
         }
 
