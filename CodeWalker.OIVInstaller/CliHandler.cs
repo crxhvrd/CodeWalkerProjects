@@ -255,6 +255,120 @@ namespace CodeWalker.OIVInstaller
         }
 
         /// <summary>
+        /// Validates game folder against package version and prompts user if needed.
+        /// Returns true if valid/updated, false if cancelled.
+        /// </summary>
+        private static bool EnsureCorrectGameFolder(OivMetadata metadata, ref string gameFolder)
+        {
+            // Check Game Version Compatibility
+            bool isGen9 = File.Exists(Path.Combine(gameFolder, "eboot.bin")) ||
+                         File.Exists(Path.Combine(gameFolder, "GTA5_Enhanced.exe"));
+            
+            bool versionMismatch = false;
+            string requiredVersion = "";
+
+            if (metadata.GameVersion == GameVersion.Enhanced && !isGen9)
+            {
+                versionMismatch = true;
+                requiredVersion = "Enhanced (Gen9)";
+            }
+            else if (metadata.GameVersion == GameVersion.Legacy && isGen9)
+            {
+                versionMismatch = true;
+                requiredVersion = "Legacy (Old Gen)";
+            }
+
+            if (versionMismatch)
+            {
+                Console.WriteLine();
+                Console.WriteLine("============================================================");
+                Console.WriteLine($"WARNING: This package targets {requiredVersion}!");
+                Console.WriteLine("The selected game folder appears to be the wrong version.");
+                Console.WriteLine("============================================================");
+                Console.WriteLine();
+                Console.WriteLine($"Please select your GTA V {requiredVersion} game folder.");
+                
+                string newFolder = BrowseForGameFolder($"Select GTA V {requiredVersion} Game Folder");
+                
+                if (string.IsNullOrEmpty(newFolder))
+                {
+                    Console.WriteLine("Operation cancelled by user.");
+                    return false;
+                }
+                
+                gameFolder = newFolder;
+                Console.WriteLine($"Game folder updated to: {gameFolder}");
+                Console.WriteLine();
+                return true;
+            }
+            else if (metadata.GameVersion == GameVersion.Any)
+            {
+                Console.WriteLine();
+                Console.WriteLine("============================================================");
+                Console.WriteLine("NOTICE: This package does not specify a target Game Version.");
+                Console.WriteLine("To ensure safety, you must manually select the Game Folder.");
+                Console.WriteLine("============================================================");
+                Console.WriteLine();
+                Console.WriteLine("Mod Authors: To automate this, add <gameversion> to your assembly.xml:");
+                Console.WriteLine("  <metadata>");
+                Console.WriteLine("    ...");
+                Console.WriteLine("    <gameversion>Enhanced</gameversion>  <!-- or Legacy -->");
+                Console.WriteLine("  </metadata>");
+                Console.WriteLine();
+
+                string newFolder = BrowseForGameFolder($"Select GTA V Game Folder for {metadata.Name}");
+                
+                if (string.IsNullOrEmpty(newFolder))
+                {
+                    Console.WriteLine("Operation cancelled by user.");
+                    return false;
+                }
+                gameFolder = newFolder;
+                Console.WriteLine($"Game folder selected: {gameFolder}");
+                Console.WriteLine();
+                return true;
+            }
+
+            return true;
+        }
+
+
+
+        /// <summary>
+        /// Checks for essential modding files based on game version and warns if missing.
+        /// Legacy: dinput8.dll + OpenIV.asi
+        /// Enhanced: xinput1_4.dll + OpenRPF.asi
+        /// </summary>
+        private static void CheckModdingEnvironment(string gameFolder)
+        {
+            // Detect game version first
+            bool isGen9 = File.Exists(Path.Combine(gameFolder, "eboot.bin")) || 
+                          File.Exists(Path.Combine(gameFolder, "GTA5_Enhanced.exe"));
+
+            string asiLoaderName = isGen9 ? "xinput1_4.dll" : "dinput8.dll";
+            string openAsiName = isGen9 ? "OpenRPF.asi" : "OpenIV.asi";
+
+            bool hasAsiLoader = File.Exists(Path.Combine(gameFolder, asiLoaderName));
+            bool hasOpenAsi = File.Exists(Path.Combine(gameFolder, openAsiName));
+            
+            Console.WriteLine("Modding Environment:");
+            string versionStr = isGen9 ? "Enhanced (Gen9)" : "Legacy";
+            Console.WriteLine($"  Detected Version: {versionStr}");
+            Console.WriteLine($"  ASI Loader ({asiLoaderName}): {(hasAsiLoader ? "Present" : "MISSING")}");
+            Console.WriteLine($"  Mods Loader ({openAsiName}):   {(hasOpenAsi ? "Present" : "MISSING")}");
+            
+            if (!hasAsiLoader || !hasOpenAsi)
+            {
+                Console.WriteLine();
+                Console.WriteLine("============================================================");
+                Console.WriteLine("WARNING: Essential modding files are missing!");
+                Console.WriteLine($"Mods will NOT load in-game without {asiLoaderName} and {openAsiName}.");
+                Console.WriteLine("============================================================");
+            }
+            Console.WriteLine();
+        }
+
+        /// <summary>
         /// Installs an OIV package
         /// </summary>
         public static int RunInstall(string oivPath, string gameFolder)
@@ -293,9 +407,27 @@ namespace CodeWalker.OIVInstaller
                 var package = OivPackage.Load(oivPath);
                 
                 Console.WriteLine($"Package: {package.Metadata.Name} v{package.Metadata.Version}");
+                
+                string supportedGame = package.Metadata.GameVersion switch
+                {
+                    GameVersion.Enhanced => "GTA V Enhanced (Gen9)",
+                    GameVersion.Legacy => "GTA V Legacy (Old Gen)",
+                    _ => "Any GTA V Version"
+                };
+                Console.WriteLine($"Supported Game: {supportedGame}");
+                
                 Console.WriteLine($"Author: {package.Metadata.AuthorDisplayName}");
                 Console.WriteLine($"Game folder: {gameFolder}");
                 Console.WriteLine();
+
+                // Validate Game Version
+                if (!EnsureCorrectGameFolder(package.Metadata, ref gameFolder))
+                {
+                    return 5;
+                }
+
+                // Check Modding Environment
+                CheckModdingEnvironment(gameFolder);
 
                 // Initialize GTA5 keys
                 Console.WriteLine("Initializing encryption keys...");
@@ -368,9 +500,9 @@ namespace CodeWalker.OIVInstaller
                         targetPackage = pkg;
                         break;
                     }
-                    // Package name contains search term OR search term contains package name
-                    if (pkg.PackageName.Contains(packageName, StringComparison.OrdinalIgnoreCase) ||
-                        packageName.Contains(pkg.PackageName, StringComparison.OrdinalIgnoreCase))
+                    // Package name contains search term (User typed "Core" and we found "CoreFX")
+                    // BUT NOT the other way around (User typed "CoreFX Roads" and we found "CoreFX" -> BAD)
+                    if (pkg.PackageName.Contains(packageName, StringComparison.OrdinalIgnoreCase))
                     {
                         targetPackage = pkg;
                         break;
@@ -434,8 +566,25 @@ namespace CodeWalker.OIVInstaller
                 string packageName = package.Metadata.Name;
                 
                 Console.WriteLine($"Package name from metadata: {packageName}");
-                Console.WriteLine();
                 
+                string supportedGame = package.Metadata.GameVersion switch
+                {
+                    GameVersion.Enhanced => "GTA V Enhanced (Gen9)",
+                    GameVersion.Legacy => "GTA V Legacy (Old Gen)",
+                    _ => "Any GTA V Version"
+                };
+                Console.WriteLine($"Supported Game: {supportedGame}");
+                Console.WriteLine();
+
+                // Validate Game Version
+                if (!EnsureCorrectGameFolder(package.Metadata, ref gameFolder))
+                {
+                    return 5;
+                }
+                
+                // Check Modding Environment
+                CheckModdingEnvironment(gameFolder);
+
                 // Delegate to the standard uninstall with the correct package name
                 return RunUninstall(packageName, gameFolder, useVanilla);
             }

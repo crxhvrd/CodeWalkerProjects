@@ -105,16 +105,33 @@ exit /b 1
 
 :found_installer
 :: -----------------------------------------------------------------------------
-:: SECTION 3: Run the Uninstaller
+:: SECTION 3: Select Uninstall Mode
+:: -----------------------------------------------------------------------------
+:ask_mode
+echo.
+echo Select uninstall mode:
+echo [1] Revert to Backup (Default) - Restores files backed up during installation
+echo [2] Reset to Vanilla - Resets modified files to clean vanilla state
+echo.
+set /p "mode=Enter choice (1-2): "
+
+if "%mode%"=="" set "mode=1"
+if "%mode%"=="1" goto :run_uninstall
+if "%mode%"=="2" goto :run_uninstall_vanilla
+goto :ask_mode
+
+:run_uninstall_vanilla
+set "ARGS=--vanilla"
+goto :run_uninstall
+
+:run_uninstall
+:: -----------------------------------------------------------------------------
+:: SECTION 4: Run the Uninstaller
 :: -----------------------------------------------------------------------------
 :: The --uninstall-oiv command reads the OIV file, extracts the package name from metadata,
 :: and then uninstalls that package. This is safer than relying on file names.
-::
-:: OPTIONS:
-:: --vanilla : To force a reset to vanilla files instead of restoring backup, add this flag:
-:: "%INSTALLER%" --uninstall-oiv "%OIV_FILE%" --vanilla
 
-"%INSTALLER%" --uninstall-oiv "%OIV_FILE%"
+"%INSTALLER%" --uninstall-oiv "%OIV_FILE%" %ARGS%
 set "RESULT=%ERRORLEVEL%"
 
 echo.
