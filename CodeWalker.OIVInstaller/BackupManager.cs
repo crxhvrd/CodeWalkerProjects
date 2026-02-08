@@ -682,6 +682,15 @@ namespace CodeWalker.OIVInstaller
             };
         }
 
+        public void TrackFileAdded(string relativePath)
+        {
+             _log.Entries.Add(new FileBackupEntry
+             {
+                 Action = BackupAction.Added,
+                 OriginalPath = relativePath
+             });
+        }
+
         public void BackupFile(string relativePath)
         {
             string fullPath = Path.Combine(_manager.GameFolder, relativePath);

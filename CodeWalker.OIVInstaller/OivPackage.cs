@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+
 using System.Xml;
+using CodeWalker.GameFiles;
 
 namespace CodeWalker.OIVInstaller
 {
@@ -15,6 +17,8 @@ namespace CodeWalker.OIVInstaller
         public List<OivOperation> Operations { get; private set; } = new List<OivOperation>();
         public string ContentPath { get; private set; } = "";
         public byte[] IconData { get; private set; }
+        public bool IsFiveM { get; set; } = false;
+        public GameFiles.RpfFile SourceRpf { get; private set; }
         
         private string _tempDirectory = "";
         private bool _disposed;
@@ -25,7 +29,14 @@ namespace CodeWalker.OIVInstaller
         public static OivPackage Load(string oivPath)
         {
             var package = new OivPackage();
-            package.LoadInternal(oivPath);
+            if (oivPath.EndsWith(".rpf", StringComparison.OrdinalIgnoreCase))
+            {
+                package.LoadFromRpf(oivPath);
+            }
+            else
+            {
+                package.LoadInternal(oivPath);
+            }
             return package;
         }
 
@@ -74,6 +85,39 @@ namespace CodeWalker.OIVInstaller
             }
         }
 
+        private void LoadFromRpf(string rpfPath)
+        {
+            // Set basic props
+            IsFiveM = true; // Assume RPFs are for FiveM for now, or check internal structure
+            var rpf = new RpfFile(rpfPath, Path.GetFileName(rpfPath));
+            rpf.ScanStructure(null, null);
+            SourceRpf = rpf;
+
+            // Find assembly.xml in root
+            var assemblyEntry = rpf.Root.Files.Find(e => e.Name.Equals("assembly.xml", StringComparison.OrdinalIgnoreCase));
+            if (assemblyEntry == null)
+            {
+                throw new FileNotFoundException("assembly.xml not found in RPF package");
+            }
+
+            // Extract assembly.xml to temp so we can parse it using existing logic
+            _tempDirectory = Path.Combine(Path.GetTempPath(), "OIVInstaller_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_tempDirectory);
+            
+            var assemblyPath = Path.Combine(_tempDirectory, "assembly.xml");
+            var assemblyBytes = rpf.ExtractFile(assemblyEntry);
+            File.WriteAllBytes(assemblyPath, assemblyBytes);
+
+            ParseAssemblyXml(assemblyPath);
+
+            // Find and load icon.png if present
+            var iconEntry = rpf.Root.Files.Find(e => e.Name.Equals("icon.png", StringComparison.OrdinalIgnoreCase));
+            if (iconEntry != null)
+            {
+                IconData = rpf.ExtractFile(iconEntry);
+            }
+        }
+
         private void ParseAssemblyXml(string xmlPath)
         {
             var doc = new XmlDocument();
@@ -100,7 +144,8 @@ namespace CodeWalker.OIVInstaller
             }
             
             // Parse game version (custom element for Enhanced/Legacy targeting)
-            var gameVersionNode = root.SelectSingleNode("gameversion");
+            // Use XPath "//gameversion" to find it anywhere (root, inside metadata, etc.)
+            var gameVersionNode = root.SelectSingleNode("//gameversion");
             if (gameVersionNode != null)
             {
                 string versionText = gameVersionNode.InnerText.Trim().ToLowerInvariant();
@@ -418,12 +463,64 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         public byte[] ReadContentFile(string relativePath)
         {
+            if (SourceRpf != null)
+            {
+                // RPF mode: find entry in RPF
+                // Normalize path
+                string searchPath = relativePath.Replace("/", "\\");
+                // The content path in RPF should be relative to root or 'content' folder? 
+                // In normal OIV, 'content' folder contains the files.
+                // If RPF *is* the package, does it have a 'content' folder inside? 
+                // The user said "read assembly.xml inside .rpf", implying the RPF root is the package root.
+                // But OIV structure usually has 'content' folder. 
+                // Let's assume the RPF structure mirrors the Zip structure.
+                
+                // Try finding the entry. 
+                // RpfFile structure traversal is needed.
+                var entry = FindRpfEntry(SourceRpf.Root, searchPath);
+                if (entry == null)
+                {
+                     // Try prepending "content\" if not found, just in case
+                     entry = FindRpfEntry(SourceRpf.Root, Path.Combine("content", searchPath));
+                }
+
+                if (entry == null)
+                {
+                    throw new FileNotFoundException($"Content file not found in RPF: {relativePath}");
+                }
+                
+                return SourceRpf.ExtractFile(entry);
+            }
+
             var fullPath = GetContentFilePath(relativePath);
             if (!File.Exists(fullPath))
             {
                 throw new FileNotFoundException($"Content file not found: {relativePath}", fullPath);
             }
             return File.ReadAllBytes(fullPath);
+        }
+
+        private RpfFileEntry FindRpfEntry(RpfDirectoryEntry dir, string path)
+        {
+            string[] parts = path.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            RpfDirectoryEntry currentDir = dir;
+            
+            for (int i = 0; i < parts.Length; i++)
+            {
+                bool isLast = i == parts.Length - 1;
+                string part = parts[i];
+                
+                if (isLast)
+                {
+                    return currentDir.Files.Find(f => f.Name.Equals(part, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    currentDir = currentDir.Directories.Find(d => d.Name.Equals(part, StringComparison.OrdinalIgnoreCase));
+                    if (currentDir == null) return null;
+                }
+            }
+            return null;
         }
 
         public void Dispose()

@@ -12,7 +12,8 @@ namespace CodeWalker.OIVInstaller
     public partial class MainForm : Form
     {
         private OivPackage _package;
-        private string _gameFolder = "";
+        private string _gameFolder = ""; // Current install target
+        private string _spGameFolder = ""; // Actual GTA V folder
         private int _marqueeStep = 0;
         private int _marqueeWait = 0;
 
@@ -25,7 +26,7 @@ namespace CodeWalker.OIVInstaller
         {
             // Check command line args for OIV file
             var args = Environment.GetCommandLineArgs();
-            if (args.Length > 1 && File.Exists(args[1]) && args[1].EndsWith(".oiv", StringComparison.OrdinalIgnoreCase))
+            if (args.Length > 1 && File.Exists(args[1]) && (args[1].EndsWith(".oiv", StringComparison.OrdinalIgnoreCase) || args[1].EndsWith(".rpf", StringComparison.OrdinalIgnoreCase)))
             {
                 txtOivPath.Text = args[1];
                 LoadOivPackage(args[1]);
@@ -39,8 +40,8 @@ namespace CodeWalker.OIVInstaller
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Title = "Select OIV Package";
-                dlg.Filter = "OIV Packages (*.oiv)|*.oiv|All Files (*.*)|*.*";
+                dlg.Title = "Select OIV or RPF Package";
+                dlg.Filter = "OIV/RPF Packages (*.oiv;*.rpf)|*.oiv;*.rpf|All Files (*.*)|*.*";
                 
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
@@ -61,6 +62,7 @@ namespace CodeWalker.OIVInstaller
                 {
                     txtGameFolder.Text = dlg.SelectedPath;
                     _gameFolder = dlg.SelectedPath;
+                    _spGameFolder = dlg.SelectedPath; // User explicitly selected this
                     ValidateGameFolder();
                     UpdateInstallButton();
                     SaveConfig(); // Save on manual selection
@@ -88,6 +90,7 @@ namespace CodeWalker.OIVInstaller
                     if (config != null && !string.IsNullOrEmpty(config.LastGameFolder) && Directory.Exists(config.LastGameFolder))
                     {
                         _gameFolder = config.LastGameFolder;
+                        _spGameFolder = config.LastGameFolder;
                         txtGameFolder.Text = _gameFolder;
                         ValidateGameFolder();
                     }
@@ -100,10 +103,11 @@ namespace CodeWalker.OIVInstaller
         {
             try
             {
-                // Only save if we have a valid folder (or at least non-empty)
-                if (string.IsNullOrEmpty(_gameFolder)) return;
-                
-                var config = new OivConfig { LastGameFolder = _gameFolder };
+                // Save the SP folder if valid, otherwise current if valid
+                string saveFolder = !string.IsNullOrEmpty(_spGameFolder) ? _spGameFolder : _gameFolder;
+                if (string.IsNullOrEmpty(saveFolder)) return;
+
+                var config = new OivConfig { LastGameFolder = saveFolder };
                 string json = System.Text.Json.JsonSerializer.Serialize(config);
                 File.WriteAllText(GetConfigPath(), json);
             }
@@ -123,7 +127,13 @@ namespace CodeWalker.OIVInstaller
                 return;
             }
 
-            using (var form = new UninstallForm(_gameFolder))
+            // Pass BOTH the SP folder and the FiveM folder
+            string spParam = !string.IsNullOrEmpty(_spGameFolder) && Directory.Exists(_spGameFolder) ? _spGameFolder : null;
+            // If current _gameFolder is NOT FiveM, it might be SP, so use that if _spGameFolder is empty
+            if (spParam == null && !string.IsNullOrEmpty(_gameFolder) && !_gameFolder.Contains("FiveM.app"))
+                spParam = _gameFolder;
+
+            using (var form = new UninstallForm(spParam, FiveMHelper.GetFiveMModsFolder()))
             {
                 form.ShowDialog(this);
             }
@@ -180,6 +190,7 @@ namespace CodeWalker.OIVInstaller
             {
                 lblGameStatus.Text = "";
                 lblGameStatus.ForeColor = Color.Gray;
+                lblAsiStatus.Text = "";
                 return;
             }
 
@@ -195,6 +206,23 @@ namespace CodeWalker.OIVInstaller
             
             // Check what version the package requires
             var requiredVersion = _package?.Metadata?.GameVersion ?? GameVersion.Any;
+            
+            if (_package != null && _package.IsFiveM)
+            {
+                // FiveM validation
+                if (string.IsNullOrEmpty(_gameFolder))
+                {
+                    lblGameStatus.Text = "⚠ FiveM mods folder not found";
+                    lblGameStatus.ForeColor = Color.Orange;
+                }
+                else
+                {
+                    lblGameStatus.Text = "✓ FiveM mods folder selected";
+                    lblGameStatus.ForeColor = Color.Green;
+                }
+                lblAsiStatus.Text = "";
+                return;
+            }
             
             if (hasEnhanced)
             {
@@ -293,6 +321,32 @@ namespace CodeWalker.OIVInstaller
                 }
                 
                 DisplayPackageInfo();
+                
+                if (_package.IsFiveM)
+                {
+                    string fivemMods = FiveMHelper.GetFiveMModsFolder();
+                    if (!string.IsNullOrEmpty(fivemMods))
+                    {
+                        _gameFolder = fivemMods;
+                        txtGameFolder.Text = _gameFolder;
+                    }
+                    else
+                    {
+                        // Fallback or just show empty? 
+                        // If FiveM app exists but mods folder doesn't, we can create it?
+                        // FiveMHelper checks existance. 
+                        // Let's manually construct it if FiveM is installed.
+                        if (FiveMHelper.IsFiveMInstalled())
+                        {
+                            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                            string fiveMAppPath = Path.Combine(localAppData, "FiveM", "FiveM.app");
+                            _gameFolder = Path.Combine(fiveMAppPath, "mods");
+                            txtGameFolder.Text = _gameFolder;
+                        }
+                    }
+                    ValidateGameFolder();
+                }
+                
                 UpdateInstallButton();
             }
             catch (Exception ex)
@@ -367,6 +421,16 @@ namespace CodeWalker.OIVInstaller
                 default:
                     lblGame.Text = "GTA V";
                     break;
+            }
+
+            if (_package.IsFiveM)
+            {
+                lblGame.Text = "FiveM";
+                lblGame.ForeColor = Color.OrangeRed;
+            }
+            else
+            {
+                lblGame.ForeColor = Color.Black; 
             }
             
             // Re-validate game folder if already set
@@ -522,6 +586,60 @@ namespace CodeWalker.OIVInstaller
                     MessageBoxIcon.Warning);
 
                 if (result == DialogResult.Cancel) return;
+            }
+
+            if (_package.IsFiveM)
+            {
+                // FiveM Installation Logic
+                if (!Directory.Exists(_gameFolder))
+                {
+                    try 
+                    {
+                        Directory.CreateDirectory(_gameFolder);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Failed to create mods folder: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+
+                string sourcePath = _package.SourceRpf.FilePath;
+                string destPath = Path.Combine(_gameFolder, Path.GetFileName(sourcePath));
+
+                if (File.Exists(destPath))
+                {
+                    var result = MessageBox.Show(
+                        $"File '{Path.GetFileName(destPath)}' already exists in FiveM mods folder.\nOverwrite?", 
+                        "Confirm Overwrite", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    if (result == DialogResult.No) return;
+                }
+
+                try
+                {
+                    // Create uninstaller log
+                    var manager = new BackupManager(_gameFolder);
+                    var session = manager.CreateSession(
+                        _package.Metadata.Name, 
+                        _package.Metadata.Description, 
+                        _package.Metadata.Version, 
+                        false // FiveM RPFs are generally not "Gen9" in the console sense, or we don't care about encryption here
+                    );
+
+                    string fileName = Path.GetFileName(sourcePath);
+                    session.TrackFileAdded(fileName);
+                    
+                    File.Copy(sourcePath, destPath, true);
+                    
+                    session.Save();
+                    
+                    MessageBox.Show("FiveM mod installed successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to install mod: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return;
             }
 
             // Check for existing installations with the same name

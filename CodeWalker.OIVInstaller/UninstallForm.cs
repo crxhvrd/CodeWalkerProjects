@@ -10,24 +10,54 @@ namespace CodeWalker.OIVInstaller
 {
     public partial class UninstallForm : Form
     {
-        private BackupManager _manager;
-        private List<BackupLog> _packages;
+        private List<BackupManager> _managers = new List<BackupManager>();
+        private Dictionary<BackupLog, BackupManager> _logSource = new Dictionary<BackupLog, BackupManager>();
+        private List<BackupLog> _allPackages = new List<BackupLog>();
 
-        public UninstallForm(string gameFolder)
+        public UninstallForm(string gameFolder, string fiveMFolder = null)
         {
             InitializeComponent();
-            _manager = new BackupManager(gameFolder);
+            
+            if (!string.IsNullOrEmpty(gameFolder) && Directory.Exists(gameFolder))
+            {
+                _managers.Add(new BackupManager(gameFolder));
+            }
+
+            if (!string.IsNullOrEmpty(fiveMFolder) && Directory.Exists(fiveMFolder))
+            {
+                // Avoid adding same folder twice if user selected FiveM folder as game folder
+                if (string.IsNullOrEmpty(gameFolder) || !string.Equals(Path.GetFullPath(gameFolder), Path.GetFullPath(fiveMFolder), StringComparison.OrdinalIgnoreCase))
+                {
+                    _managers.Add(new BackupManager(fiveMFolder));
+                }
+            }
+            
+            this.Text = "Uninstall/Manage Mods";
             LoadPackages();
         }
 
         private void LoadPackages()
         {
-            _packages = _manager.GetInstalledPackages();
             lstPackages.Items.Clear();
-            foreach (var pkg in _packages)
+            _allPackages.Clear();
+            _logSource.Clear();
+
+            foreach (var manager in _managers)
             {
-                string platformTag = pkg.IsGen9 ? "[Gen9]" : "[Legacy]";
-                lstPackages.Items.Add($"{platformTag} {pkg.PackageName} ({pkg.InstallDate})");
+                var mgrPackages = manager.GetInstalledPackages();
+                string folderName = new DirectoryInfo(manager.GameFolder).Name;
+                bool isFiveM = folderName.Equals("mods", StringComparison.OrdinalIgnoreCase) && manager.GameFolder.Contains("FiveM", StringComparison.OrdinalIgnoreCase);
+
+                foreach (var pkg in mgrPackages)
+                {
+                    _allPackages.Add(pkg);
+                    _logSource[pkg] = manager;
+
+                    string platformTag = pkg.IsGen9 ? "[Gen9]" : "[Legacy]";
+                    string sourceTag = isFiveM ? "[FiveM]" : "[SP]";
+                    
+                    lstPackages.Items.Add($"{sourceTag} {platformTag} {pkg.PackageName} ({pkg.InstallDate})");
+                }
             }
         }
 
@@ -44,7 +74,8 @@ namespace CodeWalker.OIVInstaller
         private async void btnUninstall_Click(object sender, EventArgs e)
         {
             if (lstPackages.SelectedIndex < 0) return;
-            var log = _packages[lstPackages.SelectedIndex];
+            var log = _allPackages[lstPackages.SelectedIndex];
+            var manager = _logSource[log];
 
             // Check for running game process
             while (ProcessHelper.IsGameRunning(out string processName))
@@ -61,61 +92,80 @@ namespace CodeWalker.OIVInstaller
 
             UninstallMode mode = UninstallMode.Backup;
 
-            // Custom Dialog for Uninstall Choice
-            using (var prompt = new Form())
+            bool isFiveM = manager.GameFolder.Contains("FiveM", StringComparison.OrdinalIgnoreCase);
+
+            if (isFiveM)
             {
-                prompt.Width = 450;
-                prompt.Height = 220;
-                prompt.Text = "Uninstall Options";
-                prompt.StartPosition = FormStartPosition.CenterParent;
-                prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
-                prompt.MaximizeBox = false;
-                prompt.MinimizeBox = false;
+                var result = MessageBox.Show(
+                    $"Are you sure you want to uninstall '{log.PackageName}'?\nThis will remove the file from your FiveM mods folder.",
+                    "Confirm Uninstall",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
 
-                var iconBox = new PictureBox { Image = SystemIcons.Question.ToBitmap(), Size = new Size(32, 32), Location = new Point(20, 20) };
-                prompt.Controls.Add(iconBox);
+                if (result == DialogResult.No) return;
+                
+                // For FiveM, "Backup" mode (default) will handle "Added" files by deleting them.
+                // "Vanilla" mode would do the same.
+                mode = UninstallMode.Backup;
+            }
+            else
+            {
+                // Custom Dialog for Uninstall Choice (SP only)
+                using (var prompt = new Form())
+                {
+                    prompt.Width = 450;
+                    prompt.Height = 220;
+                    prompt.Text = "Uninstall Options";
+                    prompt.StartPosition = FormStartPosition.CenterParent;
+                    prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    prompt.MaximizeBox = false;
+                    prompt.MinimizeBox = false;
 
-                var lbl = new Label 
-                { 
-                    Text = $"How do you want to uninstall '{log.PackageName}'?",
-                    Location = new Point(70, 25),
-                    Size = new Size(350, 40)
-                };
-                prompt.Controls.Add(lbl);
+                    var iconBox = new PictureBox { Image = SystemIcons.Question.ToBitmap(), Size = new Size(32, 32), Location = new Point(20, 20) };
+                    prompt.Controls.Add(iconBox);
 
-                var btnBackup = new Button 
-                { 
-                    Text = "Revert to Previous State\n(Using Backups)", 
-                    Location = new Point(70, 70), 
-                    Size = new Size(160, 50),
-                    DialogResult = DialogResult.Yes
-                };
-                btnBackup.Click += (s, ev) => { mode = UninstallMode.Backup; prompt.Close(); };
-                prompt.Controls.Add(btnBackup);
+                    var lbl = new Label 
+                    { 
+                        Text = $"How do you want to uninstall '{log.PackageName}'?",
+                        Location = new Point(70, 25),
+                        Size = new Size(350, 40)
+                    };
+                    prompt.Controls.Add(lbl);
 
-                var btnVanilla = new Button 
-                { 
-                    Text = "Reset to Vanilla\n(Ignore Backups)", 
-                    Location = new Point(240, 70), 
-                    Size = new Size(160, 50),
-                    DialogResult = DialogResult.OK
-                };
-                btnVanilla.Click += (s, ev) => { mode = UninstallMode.Vanilla; prompt.Close(); };
-                prompt.Controls.Add(btnVanilla);
+                    var btnBackup = new Button 
+                    { 
+                        Text = "Revert to Previous State\n(Using Backups)", 
+                        Location = new Point(70, 70), 
+                        Size = new Size(160, 50),
+                        DialogResult = DialogResult.Yes
+                    };
+                    btnBackup.Click += (s, ev) => { mode = UninstallMode.Backup; prompt.Close(); };
+                    prompt.Controls.Add(btnBackup);
 
-                var btnCancel = new Button 
-                { 
-                    Text = "Cancel", 
-                    Location = new Point(320, 140), 
-                    Size = new Size(80, 25),
-                    DialogResult = DialogResult.Cancel
-                };
-                btnCancel.Click += (s, ev) => { prompt.Close(); };
-                prompt.Controls.Add(btnCancel);
-                prompt.CancelButton = btnCancel;
+                    var btnVanilla = new Button 
+                    { 
+                        Text = "Reset to Vanilla\n(Ignore Backups)", 
+                        Location = new Point(240, 70), 
+                        Size = new Size(160, 50),
+                        DialogResult = DialogResult.OK
+                    };
+                    btnVanilla.Click += (s, ev) => { mode = UninstallMode.Vanilla; prompt.Close(); };
+                    prompt.Controls.Add(btnVanilla);
 
-                var result = prompt.ShowDialog(this);
-                if (result == DialogResult.Cancel) return;
+                    var btnCancel = new Button 
+                    { 
+                        Text = "Cancel", 
+                        Location = new Point(320, 140), 
+                        Size = new Size(80, 25),
+                        DialogResult = DialogResult.Cancel
+                    };
+                    btnCancel.Click += (s, ev) => { prompt.Close(); };
+                    prompt.Controls.Add(btnCancel);
+                    prompt.CancelButton = btnCancel;
+
+                    var result = prompt.ShowDialog(this);
+                    if (result == DialogResult.Cancel) return;
+                }
             }
 
             lblStatus.Text = "Uninstalling...";
@@ -127,18 +177,29 @@ namespace CodeWalker.OIVInstaller
             try
             {
                 // Ensure keys are loaded (needed for RPF operations)
-                if (GTA5Keys.PC_AES_KEY == null)
+                // Ensure keys are loaded (needed for RPF operations)
+                // For FiveM mods (RPF files), we might not need keys if we are just deleting the file.
+                // But if we ever do deep RPF content revert, we might need them.
+                // We try to load keys, but don't fail if we can't find game exe (FiveM mode).
+                 if (GTA5Keys.PC_AES_KEY == null)
                 {
-                    lblStatus.Text = "Initializing keys...";
                     await System.Threading.Tasks.Task.Run(() => 
                     {
-                        bool isGen9 = File.Exists(Path.Combine(_manager.GameFolder, "eboot.bin")) || 
-                                     File.Exists(Path.Combine(_manager.GameFolder, "GTA5_Enhanced.exe"));
-                        GTA5Keys.LoadFromPath(_manager.GameFolder, isGen9, null);
+                        try
+                        {
+                            bool isGen9 = File.Exists(Path.Combine(manager.GameFolder, "eboot.bin")) || 
+                                         File.Exists(Path.Combine(manager.GameFolder, "GTA5_Enhanced.exe"));
+                            
+                             GTA5Keys.LoadFromPath(manager.GameFolder, isGen9, null);
+                        }
+                        catch 
+                        {
+                            // Ignore key loading failure for FiveM / standalone usage
+                        }
                     });
                 }
 
-                await System.Threading.Tasks.Task.Run(() => PerformUninstall(log, mode));
+                await System.Threading.Tasks.Task.Run(() => PerformUninstall(manager, log, mode));
                 
                 MessageBox.Show("Uninstallation complete!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 LoadPackages(); // Refresh list
@@ -156,7 +217,7 @@ namespace CodeWalker.OIVInstaller
             }
         }
 
-        private void PerformUninstall(BackupLog log, UninstallMode mode)
+        private void PerformUninstall(BackupManager manager, BackupLog log, UninstallMode mode)
         {
             // Delegate actual work to BackupManager
             // We adapt the IProgress<string> to our UpdateStatus method
@@ -167,7 +228,7 @@ namespace CodeWalker.OIVInstaller
                 UpdateStatus(msg);
             });
             
-            _manager.Uninstall(log, progress, mode);
+            manager.Uninstall(log, progress, mode);
         }
 
         private void UpdateStatus(string text)

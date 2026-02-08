@@ -88,6 +88,7 @@ namespace CodeWalker.OIVInstaller
    - Select your GTA V game folder request.
      (If no folder is configured, a Windows Folder Picker dialog will appear automatically).
    - Click 'Install'.
+   - FiveM Support: Drag and drop a .RPF file to automatically install it to your FiveM mods folder.
 
 2. Uninstalling & Conflicts
    - If you try to install a package that is already installed, the installer will detect the conflict.
@@ -147,7 +148,10 @@ COMPLETED FEATURES:
 [x] XML append positions (First, Last, Before, After)
 [x] Path normalization fixes (mods\mods duplication bug)
 [x] Parent chain header refresh for deeply nested RPFs
+[x] Parent chain header refresh for deeply nested RPFs
 [x] Smart Text/XML Revert on uninstall (reverses specific additions/edits instead of full file revert)
+[x] FiveM RPF Support (Install/Uninstall/CLI)
+[x] Recursive Batch Script Generation
 
 KNOWN LIMITATIONS:
 - OpenIV may report validation errors on RPFs with 2+ levels of nesting,
@@ -248,6 +252,14 @@ The following table details how each OIV 2.2 feature is handled during installat
 - dlclist.xml Updates
   Install: Typically done via XML <add> command.
   Uninstall: Reversed via Smart XML Revert (the added line is removed), keeping other mods intact.
+
+8. FIVEM SUPPORT
+----------------
+- .RPF Installation
+  Install: Direct copy to %localappdata%\FiveM\FiveM.app\mods.
+  Uninstall: Deletes the .rpf file. (Shows 'Remove Mod' confirmation).
+- Metadata
+  Reads assembly.xml from inside the RPF to display mod info.
 ";
         }
     }

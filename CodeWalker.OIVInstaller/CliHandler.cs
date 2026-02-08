@@ -121,7 +121,7 @@ namespace CodeWalker.OIVInstaller
             Console.WriteLine("  --help                    Show this help message");
             Console.WriteLine("  --set-game <path>         Set default GTA5 game folder");
             Console.WriteLine("  --get-game                Show current default game folder");
-            Console.WriteLine("  --install <oiv-path>      Install a mod package");
+            Console.WriteLine("  --install <path>          Install a mod package (.oiv or .rpf)");
             Console.WriteLine("  --uninstall <name>        Uninstall a mod by name");
             Console.WriteLine("  --list                    List installed mods");
             Console.WriteLine("  --game <path>             Override game folder for this command");
@@ -415,6 +415,61 @@ namespace CodeWalker.OIVInstaller
                 
                 Console.WriteLine($"Package: {package.Metadata.Name} v{package.Metadata.Version}");
                 
+
+                
+                if (package.IsFiveM)
+                {
+                    Console.WriteLine("Mode: FiveM Mod (RPF)");
+                    string fiveMMods = FiveMHelper.GetFiveMModsFolder();
+                    
+                    if (string.IsNullOrEmpty(fiveMMods))
+                    {
+                        if (FiveMHelper.IsFiveMInstalled())
+                        {
+                             // Create if missing but app exists
+                             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                             fiveMMods = Path.Combine(localAppData, "FiveM", "FiveM.app", "mods");
+                             Directory.CreateDirectory(fiveMMods);
+                             Console.WriteLine($"Created FiveM mods folder: {fiveMMods}");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Error: FiveM application not found.");
+                            return 4;
+                        }
+                    }
+
+                    Console.WriteLine($"Target: {fiveMMods}");
+                    Console.WriteLine("Installing...");
+
+                    string destPath = Path.Combine(fiveMMods, Path.GetFileName(oivPath));
+                    try
+                    {
+                         // Create uninstaller log
+                        var manager = new BackupManager(fiveMMods);
+                        var session = manager.CreateSession(
+                            package.Metadata.Name, 
+                            package.Metadata.Description, 
+                            package.Metadata.Version, 
+                            false
+                        );
+
+                        session.TrackFileAdded(Path.GetFileName(destPath));
+                         
+                         File.Copy(oivPath, destPath, true);
+                         
+                         session.Save();
+                         
+                         Console.WriteLine($"Successfully installed to {destPath}");
+                         return 0;
+                    }
+                    catch (Exception ex)
+                    {
+                         Console.WriteLine($"Error installing file: {ex.Message}");
+                         return 1;
+                    }
+                }
+
                 string supportedGame = package.Metadata.GameVersion switch
                 {
                     GameVersion.Enhanced => "GTA V Enhanced (Gen9)",
@@ -530,14 +585,24 @@ namespace CodeWalker.OIVInstaller
                     return 3;
                 }
 
+                bool isFiveM = gameFolder.Contains("FiveM", StringComparison.OrdinalIgnoreCase);
+                string modeStr = useVanilla ? "Vanilla Reset" : (isFiveM ? "Remove Mod" : "Revert to Backup");
+
                 Console.WriteLine($"Uninstalling: {targetPackage.PackageName}");
-                Console.WriteLine($"Mode: {(useVanilla ? "Vanilla Reset" : "Revert to Backup")}");
+                Console.WriteLine($"Mode: {modeStr}");
                 Console.WriteLine();
 
-                // Initialize GTA5 keys
-                Console.WriteLine("Initializing encryption keys...");
-                bool isGen9 = targetPackage.IsGen9;
-                GTA5Keys.LoadFromPath(gameFolder, isGen9, null);
+                // Initialize GTA5 keys (Not needed for FiveM RPFs)
+                if (!isFiveM)
+                {
+                    Console.WriteLine("Initializing encryption keys...");
+                    bool isGen9 = targetPackage.IsGen9;
+                    try
+                    {
+                        GTA5Keys.LoadFromPath(gameFolder, isGen9, null);
+                    }
+                    catch { }
+                }
 
                 var mode = useVanilla ? UninstallMode.Vanilla : UninstallMode.Backup;
                 var progress = new Progress<string>(msg => Console.WriteLine($"  {msg}"));
@@ -590,14 +655,33 @@ namespace CodeWalker.OIVInstaller
                 Console.WriteLine($"Supported Game: {supportedGame}");
                 Console.WriteLine();
 
-                // Validate Game Version
-                if (!EnsureCorrectGameFolder(package.Metadata, ref gameFolder))
+                // Check for FiveM
+                if (package.IsFiveM)
                 {
-                    return 5;
+                    Console.WriteLine("Mode: FiveM Mod (RPF)");
+                    string fiveMMods = FiveMHelper.GetFiveMModsFolder();
+                    if (!string.IsNullOrEmpty(fiveMMods) && Directory.Exists(fiveMMods))
+                    {
+                        gameFolder = fiveMMods;
+                        Console.WriteLine($"Target: {gameFolder}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Error: FiveM mods folder not found.");
+                        return 4;
+                    }
                 }
+                else
+                {
+                    // Validate Game Version (SP only)
+                    if (!EnsureCorrectGameFolder(package.Metadata, ref gameFolder))
+                    {
+                        return 5;
+                    }
                 
-                // Check Modding Environment
-                CheckModdingEnvironment(gameFolder);
+                    // Check Modding Environment (SP only)
+                    CheckModdingEnvironment(gameFolder);
+                }
 
                 // Delegate to the standard uninstall with the correct package name
                 return RunUninstall(packageName, gameFolder, useVanilla);
