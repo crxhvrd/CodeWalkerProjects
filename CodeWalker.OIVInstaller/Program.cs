@@ -48,7 +48,7 @@ namespace CodeWalker.OIVInstaller
                 string command = null;
                 string oivPath = null;
                 string packageName = null;
-                string gameFolder = CliConfig.GetGameFolder(); // Use default if set
+                string gameFolder = OivAppConfig.Load().LastGameFolder; // Use default if set
                 bool useVanilla = false;
 
                 for (int i = 0; i < args.Length; i++)

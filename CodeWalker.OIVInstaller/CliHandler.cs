@@ -70,7 +70,8 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         public static string PromptForGameFolder()
         {
-            var existing = CliConfig.GetGameFolder();
+            var config = OivAppConfig.Load();
+            var existing = config.LastGameFolder;
             if (!string.IsNullOrEmpty(existing) && Directory.Exists(existing))
             {
                 return existing;
@@ -99,7 +100,11 @@ namespace CodeWalker.OIVInstaller
             }
             
             // Save as default
-            CliConfig.SetGameFolder(folder);
+            // Save as default
+            var newConfig = OivAppConfig.Load();
+            newConfig.LastGameFolder = folder;
+            OivAppConfig.Save(newConfig);
+            
             Console.WriteLine($"Game folder set to: {folder}");
             
             return folder;
@@ -167,7 +172,10 @@ namespace CodeWalker.OIVInstaller
 
             try
             {
-                CliConfig.SetGameFolder(path);
+                var config = OivAppConfig.Load();
+                config.LastGameFolder = path;
+                OivAppConfig.Save(config);
+                
                 Console.WriteLine($"Default game folder set to: {path}");
                 return 0;
             }
@@ -183,7 +191,8 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         public static int GetGameFolder()
         {
-            var path = CliConfig.GetGameFolder();
+            var config = OivAppConfig.Load();
+            var path = config.LastGameFolder;
             if (string.IsNullOrEmpty(path))
             {
                 Console.WriteLine("No default game folder set.");
@@ -297,6 +306,14 @@ namespace CodeWalker.OIVInstaller
                 }
                 
                 gameFolder = newFolder;
+                
+                // Update config
+                var config = OivAppConfig.Load();
+                config.LastGameFolder = gameFolder;
+                if (metadata.GameVersion == GameVersion.Enhanced) config.GameFolderEnhanced = gameFolder;
+                else if (metadata.GameVersion == GameVersion.Legacy) config.GameFolderLegacy = gameFolder;
+                OivAppConfig.Save(config);
+
                 Console.WriteLine($"Game folder updated to: {gameFolder}");
                 Console.WriteLine();
                 return true;
@@ -324,6 +341,11 @@ namespace CodeWalker.OIVInstaller
                     return false;
                 }
                 gameFolder = newFolder;
+                // Update config (generic/last used)
+                var config = OivAppConfig.Load();
+                config.LastGameFolder = gameFolder;
+                OivAppConfig.Save(config);
+                
                 Console.WriteLine($"Game folder selected: {gameFolder}");
                 Console.WriteLine();
                 return true;
@@ -392,21 +414,7 @@ namespace CodeWalker.OIVInstaller
                 return 3;
             }
 
-            if (string.IsNullOrEmpty(gameFolder))
-            {
-                // Auto-prompt for game folder
-                gameFolder = PromptForGameFolder();
-                if (string.IsNullOrEmpty(gameFolder))
-                {
-                    return 4;
-                }
-            }
-
-            if (!Directory.Exists(gameFolder))
-            {
-                Console.WriteLine($"Error: Game folder not found: {gameFolder}");
-                return 4;
-            }
+            // Game folder validation moved inside try block (after package load)
 
             try
             {
@@ -414,6 +422,35 @@ namespace CodeWalker.OIVInstaller
                 var package = OivPackage.Load(oivPath);
                 
                 Console.WriteLine($"Package: {package.Metadata.Name} v{package.Metadata.Version}");
+
+                // Determine/Validate Game Folder
+                if (string.IsNullOrEmpty(gameFolder) && !package.IsFiveM)
+                {
+                    // Auto-detect from config based on package version
+                    var config = OivAppConfig.Load();
+                    if (package.Metadata.GameVersion == GameVersion.Enhanced && !string.IsNullOrEmpty(config.GameFolderEnhanced))
+                    {
+                        gameFolder = config.GameFolderEnhanced;
+                    }
+                    else if (package.Metadata.GameVersion == GameVersion.Legacy && !string.IsNullOrEmpty(config.GameFolderLegacy))
+                    {
+                        gameFolder = config.GameFolderLegacy;
+                    }
+
+                    // Fallback to default prompt
+                    if (string.IsNullOrEmpty(gameFolder))
+                    {
+                        gameFolder = PromptForGameFolder();
+                    }
+                    
+                    if (string.IsNullOrEmpty(gameFolder)) return 4;
+                }
+
+                if (!package.IsFiveM && !Directory.Exists(gameFolder))
+                {
+                    Console.WriteLine($"Error: Game folder not found: {gameFolder}");
+                    return 4;
+                }
                 
 
                 
@@ -673,6 +710,20 @@ namespace CodeWalker.OIVInstaller
                 }
                 else
                 {
+                    // Auto-detect from config based on package version if not specified
+                    if (string.IsNullOrEmpty(gameFolder))
+                    {
+                        var config = OivAppConfig.Load();
+                        if (package.Metadata.GameVersion == GameVersion.Enhanced && !string.IsNullOrEmpty(config.GameFolderEnhanced))
+                        {
+                            gameFolder = config.GameFolderEnhanced;
+                        }
+                        else if (package.Metadata.GameVersion == GameVersion.Legacy && !string.IsNullOrEmpty(config.GameFolderLegacy))
+                        {
+                            gameFolder = config.GameFolderLegacy;
+                        }
+                    }
+
                     // Validate Game Version (SP only)
                     if (!EnsureCorrectGameFolder(package.Metadata, ref gameFolder))
                     {

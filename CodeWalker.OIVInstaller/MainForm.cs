@@ -14,6 +14,8 @@ namespace CodeWalker.OIVInstaller
         private OivPackage _package;
         private string _gameFolder = ""; // Current install target
         private string _spGameFolder = ""; // Actual GTA V folder
+        private string _gameFolderLegacy = "";
+        private string _gameFolderEnhanced = "";
         private int _marqueeStep = 0;
         private int _marqueeWait = 0;
 
@@ -63,6 +65,23 @@ namespace CodeWalker.OIVInstaller
                     txtGameFolder.Text = dlg.SelectedPath;
                     _gameFolder = dlg.SelectedPath;
                     _spGameFolder = dlg.SelectedPath; // User explicitly selected this
+
+                    // Update specific version slot if we know context
+                    if (_package != null && _package.Metadata.GameVersion == GameVersion.Enhanced)
+                    {
+                        _gameFolderEnhanced = _gameFolder;
+                    }
+                    else if (_package != null && _package.Metadata.GameVersion == GameVersion.Legacy)
+                    {
+                        _gameFolderLegacy = _gameFolder;
+                    }
+                    else
+                    {
+                        // Fallback: If no package context, assume Legacy/Base is the primary one people set
+                        // Or maybe update both if they are empty?
+                        if (string.IsNullOrEmpty(_gameFolderLegacy)) _gameFolderLegacy = _gameFolder;
+                    }
+
                     ValidateGameFolder();
                     UpdateInstallButton();
                     SaveConfig(); // Save on manual selection
@@ -70,54 +89,41 @@ namespace CodeWalker.OIVInstaller
             }
         }
         
-        private string GetConfigPath()
-        {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string cwFolder = Path.Combine(appData, "CodeWalker");
-            if (!Directory.Exists(cwFolder)) Directory.CreateDirectory(cwFolder);
-            return Path.Combine(cwFolder, "OivInstaller.json");
-        }
+        // GetConfigPath removed, logic moved to OivAppConfig
         
         private void LoadConfig()
         {
-            try
-            {
-                string path = GetConfigPath();
-                if (File.Exists(path))
-                {
-                    string json = File.ReadAllText(path);
-                    var config = System.Text.Json.JsonSerializer.Deserialize<OivConfig>(json);
-                    if (config != null && !string.IsNullOrEmpty(config.LastGameFolder) && Directory.Exists(config.LastGameFolder))
-                    {
-                        _gameFolder = config.LastGameFolder;
-                        _spGameFolder = config.LastGameFolder;
-                        txtGameFolder.Text = _gameFolder;
-                        ValidateGameFolder();
-                    }
-                }
-            }
-            catch { /* Ignore config load errors */ }
+             var config = OivAppConfig.Load();
+             if (config != null)
+             {
+                 if (!string.IsNullOrEmpty(config.LastGameFolder) && Directory.Exists(config.LastGameFolder))
+                 {
+                     _gameFolder = config.LastGameFolder;
+                     _spGameFolder = config.LastGameFolder;
+                     txtGameFolder.Text = _gameFolder;
+                     ValidateGameFolder();
+                 }
+                 
+                 _gameFolderLegacy = config.GameFolderLegacy;
+                 _gameFolderEnhanced = config.GameFolderEnhanced;
+             }
         }
         
         private void SaveConfig()
         {
-            try
-            {
-                // Save the SP folder if valid, otherwise current if valid
-                string saveFolder = !string.IsNullOrEmpty(_spGameFolder) ? _spGameFolder : _gameFolder;
-                if (string.IsNullOrEmpty(saveFolder)) return;
+            string saveFolder = !string.IsNullOrEmpty(_spGameFolder) ? _spGameFolder : _gameFolder;
+            if (string.IsNullOrEmpty(saveFolder)) return;
 
-                var config = new OivConfig { LastGameFolder = saveFolder };
-                string json = System.Text.Json.JsonSerializer.Serialize(config);
-                File.WriteAllText(GetConfigPath(), json);
-            }
-            catch { /* Ignore config save errors */ }
+            var config = OivAppConfig.Load(); // Reload to keep other changes? Or just overwrite?
+            // Simple overwrite for now as we are single instance typically
+            config.LastGameFolder = saveFolder;
+            config.GameFolderLegacy = _gameFolderLegacy;
+            config.GameFolderEnhanced = _gameFolderEnhanced;
+            
+            OivAppConfig.Save(config);
         }
         
-        private class OivConfig
-        {
-            public string LastGameFolder { get; set; }
-        }
+        // Internal OivConfig class removed
 
         private void btnUninstall_Click(object sender, EventArgs e)
         {

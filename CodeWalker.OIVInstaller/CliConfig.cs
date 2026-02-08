@@ -7,54 +7,52 @@ namespace CodeWalker.OIVInstaller
     /// <summary>
     /// Handles CLI configuration storage (default game folder, etc.)
     /// </summary>
-    public static class CliConfig
+    /// <summary>
+    /// Handles shared configuration storage (default game folder, etc.)
+    /// </summary>
+    public static class OivAppConfig
     {
         private static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CodeWalker.OIVInstaller");
+            "CodeWalker");
         
-        private static readonly string ConfigFile = Path.Combine(ConfigDir, "cli.json");
+        private static readonly string ConfigFile = Path.Combine(ConfigDir, "OivInstaller.json");
 
-        private class Config
+        public class ConfigData
         {
-            public string GameFolder { get; set; }
+            public string LastGameFolder { get; set; }
+            public string GameFolderLegacy { get; set; }
+            public string GameFolderEnhanced { get; set; }
         }
 
-        /// <summary>
-        /// Gets the saved default game folder, or null if not set.
-        /// </summary>
-        public static string GetGameFolder()
+        public static ConfigData Load()
         {
             try
             {
                 if (File.Exists(ConfigFile))
                 {
                     var json = File.ReadAllText(ConfigFile);
-                    var config = JsonSerializer.Deserialize<Config>(json);
-                    return config?.GameFolder;
+                    return JsonSerializer.Deserialize<ConfigData>(json);
                 }
             }
             catch { }
-            return null;
+            return new ConfigData();
         }
 
-        /// <summary>
-        /// Saves the default game folder to config.
-        /// </summary>
-        public static void SetGameFolder(string path)
+        public static void Save(ConfigData config)
         {
             try
             {
                 if (!Directory.Exists(ConfigDir))
                     Directory.CreateDirectory(ConfigDir);
 
-                var config = new Config { GameFolder = path };
                 var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(ConfigFile, json);
             }
             catch (Exception ex)
             {
-                throw new Exception($"Failed to save config: {ex.Message}");
+                // In a GUI app we might want to log this vs throw
+                // throw new Exception($"Failed to save config: {ex.Message}");
             }
         }
     }
