@@ -511,6 +511,19 @@ namespace CodeWalker.OIVInstaller
         {
             if (_package == null || string.IsNullOrEmpty(_gameFolder)) return;
 
+            // Check for running game process
+            while (ProcessHelper.IsGameRunning(out string processName))
+            {
+                var result = MessageBox.Show(
+                    $"The game process '{processName}' is currently running.\n\n" +
+                    "Please close the game before installing mods to prevent file locking errors.",
+                    "Game is Running",
+                    MessageBoxButtons.RetryCancel,
+                    MessageBoxIcon.Warning);
+
+                if (result == DialogResult.Cancel) return;
+            }
+
             // Check for existing installations with the same name
             var backupManager = new BackupManager(_gameFolder);
             var existingPackages = backupManager.GetInstalledPackages()

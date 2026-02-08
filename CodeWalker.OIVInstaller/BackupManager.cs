@@ -97,6 +97,8 @@ namespace CodeWalker.OIVInstaller
     
         public void Uninstall(BackupLog log, IProgress<string> progress, UninstallMode mode = UninstallMode.Backup)
         {
+            bool hasErrors = false;
+
             // Process in reverse order to undo changes correctly
             for (int i = log.Entries.Count - 1; i >= 0; i--)
             {
@@ -125,18 +127,33 @@ namespace CodeWalker.OIVInstaller
                 }
                 catch (Exception ex)
                 {
-                    progress?.Report($"Error reverting {entry.OriginalPath}: {ex.Message}");
+                    hasErrors = true;
+                    progress?.Report($"ERROR: Failed to revert {entry.OriginalPath}: {ex.Message}");
+                    FileLog($"Uninstall error for {entry.OriginalPath}: {ex}");
                 }
             }
 
-            // Cleanup backup folder
-            try
+            // Cleanup backup folder ONLY if no errors occurred
+            if (!hasErrors)
             {
-                progress?.Report("Cleaning up backup files...");
-                if (Directory.Exists(log.BackupFolderPath))
-                    Directory.Delete(log.BackupFolderPath, true);
+                try
+                {
+                    progress?.Report("Cleaning up backup files...");
+                    if (Directory.Exists(log.BackupFolderPath))
+                        Directory.Delete(log.BackupFolderPath, true);
+                }
+                catch (Exception ex)
+                {
+                    // Non-critical: cleanup failed but uninstall succeeded
+                    progress?.Report($"Warning: Could not delete backup folder: {ex.Message}");
+                }
             }
-            catch { }
+            else
+            {
+                progress?.Report("WARNING: Uninstall completed with errors.");
+                progress?.Report("Backup files were NOT deleted to allow manual recovery.");
+                progress?.Report($"Backup location: {log.BackupFolderPath}");
+            }
         }
 
         private void RestoreFileFromBackup(FileBackupEntry entry, string backupFolderPath, string fullPath, IProgress<string> progress)

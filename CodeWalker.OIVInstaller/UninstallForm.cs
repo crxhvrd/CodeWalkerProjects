@@ -46,6 +46,19 @@ namespace CodeWalker.OIVInstaller
             if (lstPackages.SelectedIndex < 0) return;
             var log = _packages[lstPackages.SelectedIndex];
 
+            // Check for running game process
+            while (ProcessHelper.IsGameRunning(out string processName))
+            {
+                var result = MessageBox.Show(
+                    $"The game process '{processName}' is currently running.\n\n" +
+                    "Please close the game before uninstalling mods to prevent file locking errors.",
+                    "Game is Running",
+                    MessageBoxButtons.RetryCancel,
+                    MessageBoxIcon.Warning);
+
+                if (result == DialogResult.Cancel) return;
+            }
+
             UninstallMode mode = UninstallMode.Backup;
 
             // Custom Dialog for Uninstall Choice

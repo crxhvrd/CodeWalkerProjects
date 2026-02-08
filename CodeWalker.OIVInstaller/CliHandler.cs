@@ -311,8 +311,8 @@ namespace CodeWalker.OIVInstaller
                 Console.WriteLine();
                 Console.WriteLine("Mod Authors: To automate this, add <gameversion> to your assembly.xml:");
                 Console.WriteLine("  <metadata>");
-                Console.WriteLine("    ...");
                 Console.WriteLine("    <gameversion>Enhanced</gameversion>  <!-- or Legacy -->");
+                Console.WriteLine("    ...");
                 Console.WriteLine("  </metadata>");
                 Console.WriteLine();
 
@@ -373,6 +373,13 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         public static int RunInstall(string oivPath, string gameFolder)
         {
+            if (ProcessHelper.IsGameRunning(out string processName))
+            {
+                Console.WriteLine($"Error: The game process '{processName}' is currently running.");
+                Console.WriteLine("Please close the game before installing mods.");
+                return 6; // Exit code 6 for Game Running
+            }
+
             if (string.IsNullOrEmpty(oivPath))
             {
                 Console.WriteLine("Error: No OIV package path specified.");
@@ -463,6 +470,13 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         public static int RunUninstall(string packageName, string gameFolder, bool useVanilla)
         {
+            if (ProcessHelper.IsGameRunning(out string processName))
+            {
+                Console.WriteLine($"Error: The game process '{processName}' is currently running.");
+                Console.WriteLine("Please close the game before uninstalling mods.");
+                return 6;
+            }
+
             if (string.IsNullOrEmpty(packageName))
             {
                 Console.WriteLine("Error: No package name specified.");
