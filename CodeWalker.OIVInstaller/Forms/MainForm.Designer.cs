@@ -582,6 +582,9 @@ namespace CodeWalker.OIVInstaller
             this.lblEmptyTitle.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(70)))), ((int)(((byte)(75)))), ((int)(((byte)(85)))));
             this.lblEmptyTitle.Location = new System.Drawing.Point(0, 0);
             this.lblEmptyTitle.Name = "lblEmptyTitle";
+            // GDI+ text rendering: GDI puts an uneven glyph gap in this string at
+            // 11pt Segoe UI ("m od") because 11pt maps to a fractional pixel size.
+            this.lblEmptyTitle.UseCompatibleTextRendering = true;
             this.lblEmptyTitle.Text = "Drop a mod package here";
             this.lblEmptyTitle.TabIndex = 1;
             //
