@@ -125,13 +125,13 @@ Measured across **all 3,812 metadata files in a stock Enhanced `update.rpf`**, b
 
 | | Before | After |
 |---|---:|---:|
-| Round-trips losslessly | 1,125 (29.5%) | **3,807 (99.9%)** |
-| Loses data | 2,685 | 4 |
+| Round-trips losslessly | 1,125 (29.5%) | **3,809 (99.9%)** |
+| Loses data | 2,685 | 2 |
 | Produces unparseable XML | 2 | 1 |
 
-By format afterwards: **RSC/Meta 3,082 of 3,082 (100%)**, PSO 688 of 692, RBF 37 of 38.
+By format afterwards: **RSC/Meta 3,082 of 3,082 (100%)**, PSO 690 of 692, RBF 37 of 38.
 
-Four distinct bugs were responsible.
+Five distinct bugs were responsible.
 
 ### 1. The recompiler ignored each file's own schema
 
@@ -168,13 +168,28 @@ On any machine whose locale uses a comma decimal separator — most of Europe an
 
 *File: `PsoBuilder.cs`*
 
+### 5. Enum values resolved against the built-in tables
+
+The same schema-drift problem as bug 1, in two enum paths that the first fix missed — and the most damaging of the set, because it hit `carcols.ymt` and `cameras.ymt`, two of the most frequently edited files in vehicle and camera modding.
+
+Enum members are stored as values but written to XML as names, so rebuilding has to map each name back. Both mapping paths consulted `PsoTypes.GetEnumInfo` rather than the definitions in the file being edited:
+
+- **Enum arrays.** When the built-in table didn't contain the enum, the name lookup returned nothing and the code fell into an empty `else` branch, leaving every element as `0`. In `carcols.ymt` this silently emptied `turnOffBones` — the list of bones hidden when a mod part is fitted, so stock parts would have shown through new bodywork.
+- **Single enum values.** Worse, where the built-in table held the *same* enum with different member keys, a name resolved to the wrong value: `mod_col_3` became `extra_10`, quietly reassigning a collision bone rather than failing.
+
+Both now go through `pb.GetEnumInfo(...)`, so the file's own enum definitions win. `GetEnumInt` takes an optional `PsoBuilder` for this, and the array path gained a null guard.
+
+Together these took `carcols.ymt` from 591 differing lines to **0** and `cameras.ymt` from 261 to **0**. Both are now fully editable: changing a real camera value and rebuilding alters exactly the edited line and nothing else in a 148,780-line file.
+
+*File: `XmlPso.cs`*
+
 ---
 
 ## Known issues
 
 All of these are **fail-safe**: the installer's rebuild verification refuses the write and reports it, rather than producing a corrupt file.
 
-- **Four PSO files still lose data on rebuild** — `animpostfx.ymt`, `junctions.pso` and two others. Cause not yet diagnosed.
+- **Two PSO files render differently after a rebuild** — `animpostfx.ymt` and `junctions.pso`. Both are *stable fixed points*: they change once and then hold, so the data survives editing and repeated edits don't degrade it. The verification guard is stricter than it needs to be here and refuses them; accepting any file that passes a fixed-point check would unblock both.
 - **`shopping_cart_validation.ymt` decompiles to invalid XML.** Its element name is `CriminalCareerDefs::ShoppingCartItemCategoryLimits`, and `::` is illegal in an XML name. Fixing this requires a name-mangling scheme that round-trips in both directions, which is a decision about the XML format mod authors work with.
 - **Uninstall is not byte-exact for a resource inside a nested archive.** Reverting an edit to, say, a `.ytyp` within a nested `.rpf` returns a valid, correctly sized, loadable file that is not byte-identical to the original. Smart revert has been ruled out as the cause; the fault lies in the full-restore path (`RestoreFullRpfBackup` → `RpfFile.CreateFile`), and notably that same path restores a top-level file byte-exactly.
 
