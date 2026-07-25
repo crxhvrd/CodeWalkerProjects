@@ -131,7 +131,7 @@ Measured across **all 3,812 metadata files in a stock Enhanced `update.rpf`**, b
 
 By format afterwards: **RSC/Meta 3,082 of 3,082 (100%)**, PSO 690 of 692, RBF 37 of 38.
 
-Five distinct bugs were responsible.
+Seven distinct problems were responsible — five in the round trip itself, plus a checksum the game validates and a rebuild that can't be made byte-faithful.
 
 ### 1. The recompiler ignored each file's own schema
 
@@ -182,6 +182,24 @@ Both now go through `pb.GetEnumInfo(...)`, so the file's own enum definitions wi
 Together these took `carcols.ymt` from 591 differing lines to **0** and `cameras.ymt` from 261 to **0**. Both are now fully editable: changing a real camera value and rebuilding alters exactly the edited line and nothing else in a 148,780-line file.
 
 *File: `XmlPso.cs`*
+
+### 6. Checksum-protected metadata could not be edited at all
+
+Some metadata files carry a `CHKS` chunk holding a checksum of their own contents, and the game validates it for a handful of them — `cameras.ymt` being the one modders run into. Any edit leaves that checksum stale, and the game then crashes on startup rather than reporting a problem. A single changed byte was enough, which made these files appear permanently unmoddable: even an otherwise byte-identical copy would fail.
+
+`PsoChecksum.Update()` recomputes the chunk after a write: Jenkins one-at-a-time seeded with the chunk's salt, over the file with its size and checksum fields zeroed, hashing the bytes as **signed** values (anything above `0x7F` subtracts rather than adds — treating them as unsigned silently produces the wrong result). It's a no-op on files without a `CHKS` chunk. Verified by reproducing the checksum that ships in a stock `cameras.ymt`.
+
+*File: `PsoChecksum.cs`*
+
+### 7. Editing preserves the original file rather than rebuilding it
+
+Even with the fixes above, a rebuilt PSO isn't byte-identical to Rockstar's: structures carry padding and sentinel defaults that no schema entry describes, so they never reach the XML and can't be reconstructed.
+
+Metadata edits therefore avoid rebuilding entirely. CodeWalker rebuilds the file twice — once from the unedited XML, once from yours — and diffs the two to find exactly which bytes your edit touches, which is reliable because the rebuild now reproduces the source's block layout exactly. Those bytes are applied to the untouched original and the checksum recomputed. A one-value edit to a 828 KB `cameras.ymt` changes five bytes: the value, and the checksum.
+
+Structural changes (adding or removing array items) still take the full rebuild path.
+
+*File: `MetaForm.cs`*
 
 ---
 

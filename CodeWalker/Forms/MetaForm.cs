@@ -419,6 +419,84 @@ namespace CodeWalker.Forms
 
 
 
+        /// <summary>
+        /// The Meta/PsoFile behind the currently loaded file. Passing this to the
+        /// recompiler makes it rebuild from the schema the file itself declares,
+        /// preserving fields and sections the built-in tables don't cover.
+        /// </summary>
+        private object GetSchemaSource()
+        {
+            switch (RawPropertyGrid.SelectedObject)
+            {
+                case YmtFile f: return (object)f.Meta ?? f.Pso;
+                case YtypFile f: return (object)f.Meta ?? f.Pso;
+                case YmapFile f: return (object)f.Meta ?? f.Pso;
+                case YmfFile f: return (object)f.Meta ?? f.Pso;
+                case JPsoFile f: return f.Pso;
+                case CutFile f: return f.Pso;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Produces the original file with only the edited bytes changed, or null when
+        /// that isn't possible (structural edit, or the rebuild doesn't line up with
+        /// the original).
+        ///
+        /// Works by rebuilding the UNEDITED xml as well, and diffing the two rebuilds:
+        /// because the rebuild reproduces the source's block layout exactly, the byte
+        /// offsets that differ are the real locations of the edit in the original.
+        /// </summary>
+        private byte[] TryPatchOriginal(XmlDocument editedDoc, byte[] rebuiltEdited)
+        {
+            try
+            {
+                if (rebuiltEdited == null || rpfFileEntry == null) return null;
+
+                var original = rpfFileEntry.File?.ExtractFile(rpfFileEntry);
+                if (original == null || original.Length != rebuiltEdited.Length) return null;
+
+                var originalXml = MetaXml.GetXml(rpfFileEntry, original, out _, "");
+                if (string.IsNullOrEmpty(originalXml)) return null;
+
+                var baseDoc = new XmlDocument();
+                baseDoc.LoadXml(originalXml);
+                var rebuiltBase = XmlMeta.GetData(baseDoc, metaFormat, string.Empty, GetSchemaSource());
+                if (rebuiltBase == null || rebuiltBase.Length != rebuiltEdited.Length) return null;
+
+                var patched = (byte[])original.Clone();
+                int changed = 0;
+                for (int i = 0; i < rebuiltEdited.Length; i++)
+                {
+                    if (rebuiltBase[i] == rebuiltEdited[i]) continue;
+                    patched[i] = rebuiltEdited[i];
+                    changed++;
+                }
+                if (changed == 0) return original;   //nothing actually changed
+
+                //Some metadata is checksum-validated by the game (cameras being the
+                //obvious one), which crashes on any file whose CHKS chunk no longer
+                //matches its contents.
+                PsoChecksum.Update(patched);
+
+                //Sanity check: the patched file must read back as the edit intended.
+                var verify = MetaXml.GetXml(rpfFileEntry, patched, out _, "");
+                if (string.IsNullOrEmpty(verify)) return null;
+                if (Normalise(verify) != Normalise(editedDoc.OuterXml)) return null;
+
+                return patched;
+            }
+            catch { return null; }
+        }
+
+        private static string Normalise(string xml)
+        {
+            if (string.IsNullOrEmpty(xml)) return string.Empty;
+            var sb = new System.Text.StringBuilder(xml.Length);
+            foreach (var c in xml) if (!char.IsWhiteSpace(c)) sb.Append(c);
+            return sb.ToString();
+        }
+
         public bool SaveMeta(XmlDocument doc)
         {
             //if explorer is in edit mode, and the current RpfFileEntry is valid, convert XML to the 
@@ -437,7 +515,18 @@ namespace CodeWalker.Forms
 #endif
             {
 
-                data = XmlMeta.GetData(doc, metaFormat, string.Empty);
+                //Rebuild using the schema of the file we loaded, not the built-in
+                //tables - otherwise fields those tables don't know about are dropped,
+                //along with the STRE/PSIG/CHKS sections, and the game rejects the file.
+                data = XmlMeta.GetData(doc, metaFormat, string.Empty, GetSchemaSource());
+
+                //A rebuild can't reproduce everything the original contains (padding,
+                //sentinel defaults, anything no schema entry covers), and the game
+                //rejects files that lose it. So when the edit only changed VALUES,
+                //apply those bytes to the original file instead of shipping the
+                //rebuild. Structural edits still need the rebuild.
+                var patched = TryPatchOriginal(doc, data);
+                if (patched != null) data = patched;
 
                 if (data == null)
                 {

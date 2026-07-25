@@ -18,6 +18,14 @@ namespace CodeWalker
         [STAThread]
         static void Main(string[] args)
         {
+            // Game data files are culture-neutral: floats always use '.' as the
+            // separator. On a locale that uses ',' stray culture-sensitive formatting
+            // writes 4.2 as "4,2", which reads back as 42 — a silent tenfold change to
+            // real values inside .ymap/.ymt files. Pin the invariant culture so saving
+            // game files can never depend on the user's regional settings.
+            var invariantCulture = System.Globalization.CultureInfo.InvariantCulture;
+            System.Globalization.CultureInfo.DefaultThreadCurrentCulture = invariantCulture;
+            System.Threading.Thread.CurrentThread.CurrentCulture = invariantCulture;
 
             bool menumode = false;
             bool explorermode = false;

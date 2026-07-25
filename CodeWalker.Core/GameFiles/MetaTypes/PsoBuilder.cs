@@ -261,9 +261,73 @@ namespace CodeWalker.GameFiles
         private Dictionary<MetaName, PsoStructureInfo> SourceStructureInfos;
         private Dictionary<MetaName, PsoEnumInfo> SourceEnumInfos;
 
+        /// <summary>
+        /// The edited file's encrypted string section, carried through verbatim.
+        /// The builder cannot construct one, so without this a rebuild silently drops
+        /// it — 45 KB of cameras.ymt, and the game crashes on load without it.
+        /// Passed through as raw bytes: no decryption, no re-encryption, so the
+        /// section is reproduced exactly as Rockstar shipped it.
+        /// </summary>
+        private PsoSTRESection SourceSTRESection;
+
+        /// <summary>
+        /// Signature and checksum sections from the edited file. The builder cannot
+        /// generate either, and PsoFile.Write only emits sections that exist, so a
+        /// rebuild silently dropped them — leaving a structurally incomplete file that
+        /// the game rejects. Carried through verbatim like STRE.
+        /// </summary>
+        private PsoPSIGSection SourcePSIGSection;
+        private PsoCHKSSection SourceCHKSSection;
+
+        /// <summary>Carry the source checksum over. Safe now that the rebuild
+        /// reproduces the source's block layout byte-for-byte.</summary>
+        public static bool KeepSourceChecksum = true;
+
         /// <summary>Adopt the structure/enum definitions of the file being edited.</summary>
         public void UseSchemaFrom(PsoFile pso)
         {
+            SourceSTRESection = pso?.STRESection;
+            SourcePSIGSection = pso?.PSIGSection;
+            SourceCHKSSection = pso?.CHKSSection;
+
+            // Capture a template of each structure type's raw bytes from the source.
+            // Structures contain bytes no schema entry covers — alignment gaps and
+            // sentinel defaults such as the 0x7F800001 NaN that means "unset". Those
+            // never reach the XML, so a rebuild from a zeroed buffer silently writes
+            // 0.0 over them. Seeding from the original preserves them.
+            if (pso?.DataMapSection?.Entries != null && pso.DataSection?.Data != null)
+            {
+                var src = pso.DataSection.Data;
+                StructureTemplates = new Dictionary<MetaName, byte[]>();
+                foreach (var dme in pso.DataMapSection.Entries)
+                {
+                    if (StructureTemplates.ContainsKey(dme.NameHash)) continue;
+                    if (dme.Offset < 0 || dme.Length <= 0 || dme.Offset + dme.Length > src.Length) continue;
+                    //keep the WHOLE block so each instance can be seeded from its own
+                    //original bytes, not just the first one's
+                    var t = new byte[dme.Length];
+                    Buffer.BlockCopy(src, dme.Offset, t, 0, dme.Length);
+                    StructureTemplates[dme.NameHash] = t;
+                }
+            }
+
+            // Pre-create the data blocks in the SOURCE file's order and naming, so the
+            // rebuild reproduces its block layout instead of inventing one. EnsureBlock
+            // then finds these already waiting and fills them in place. Without this the
+            // same data comes out repartitioned across all 138 blocks in a different
+            // order — self-consistent, and readable by CodeWalker, but not what the
+            // game was given.
+            if (pso?.DataMapSection?.Entries != null && Blocks.Count == 0)
+            {
+                foreach (var dme in pso.DataMapSection.Entries)
+                {
+                    var b = new PsoBuilderBlock();
+                    b.StructureNameHash = dme.NameHash;
+                    b.Index = Blocks.Count;
+                    Blocks.Add(b);
+                }
+            }
+
             var entries = pso?.SchemaSection?.Entries;
             if (entries == null) return;
 
@@ -400,17 +464,61 @@ namespace CodeWalker.GameFiles
 
 
 
+        /// <summary>Data blocks start on 16-byte boundaries, as the game's own files do.
+        /// Packing them tight produced a file whose block offsets didn't match the
+        /// original's, which the game rejected.</summary>
+        /// <summary>Raw first-instance bytes per structure type, from the edited file.</summary>
+        private Dictionary<MetaName, byte[]> StructureTemplates;
+
+        /// <summary>
+        /// Initialise a structure buffer with the source file's bytes for that type, so
+        /// fields the schema/XML don't represent survive the rebuild. Falls back to
+        /// leaving the buffer zeroed when there's no template.
+        /// </summary>
+        public void SeedStructure(MetaName type, byte[] data)
+        {
+            if (data == null || data.Length == 0) return;
+            if (StructureTemplates == null) return;
+            if (!StructureTemplates.TryGetValue(type, out var blk) || blk == null) return;
+
+            //Instances of a type are laid out consecutively in its block, and the
+            //rebuild now reproduces that order, so the Nth structure we build seeds
+            //from the Nth instance of the original.
+            SeedCounters.TryGetValue(type, out int idx);
+            SeedCounters[type] = idx + 1;
+
+            int off = idx * data.Length;
+            if (off + data.Length <= blk.Length) Buffer.BlockCopy(blk, off, data, 0, data.Length);
+            else if (blk.Length >= data.Length) Buffer.BlockCopy(blk, 0, data, 0, data.Length);
+        }
+
+        private readonly Dictionary<MetaName, int> SeedCounters = new Dictionary<MetaName, int>();
+
+        /// <summary>Byte the game's own PSO files use for padding between data blocks.</summary>
+        private const byte PaddingFill = 0x70;
+
+        private const int BlockAlignment = 16;
+        private static int AlignUp(int v) => (v + BlockAlignment - 1) & ~(BlockAlignment - 1);
+
         public byte[] GetData()
         {
             int totlen = 16;
             for (int i = 0; i < Blocks.Count; i++)
             {
+                totlen = AlignUp(totlen);
                 totlen += Blocks[i].TotalSize;
             }
             byte[] data = new byte[totlen];
+
+            //Rockstar fills the header reserve and the gaps between blocks with 0x70,
+            //not zeros. Item data overwrites everything else, so seeding the whole
+            //buffer reproduces their padding exactly.
+            for (int i = 0; i < data.Length; i++) data[i] = PaddingFill;
+
             int offset = 16; //reserved space for headers
             for (int i = 0; i < Blocks.Count; i++)
             {
+                offset = AlignUp(offset);
                 var block = Blocks[i];
                 for (int j = 0; j < block.Items.Count; j++)
                 {
@@ -451,6 +559,15 @@ namespace CodeWalker.GameFiles
                 pso.SchemaSection.EntriesIdx[i].NameHash = schEntries[i].IndexInfo.NameHash;
             }
 
+            // Keep the source file's encrypted string, signature and checksum sections.
+            if (SourceSTRESection != null) pso.STRESection = SourceSTRESection;
+            if (SourcePSIGSection != null) pso.PSIGSection = SourcePSIGSection;
+            // CHKS is a checksum over the data. A rebuild repacks the data blocks, so
+            // the original checksum no longer describes them — carrying it over
+            // verbatim gives the game a file whose checksum disagrees with its
+            // contents. Omit it unless/until we can recompute it.
+            if (SourceCHKSSection != null && KeepSourceChecksum) pso.CHKSSection = SourceCHKSSection;
+
             if (STRFStrings.Count > 0)
             {
                 pso.STRFSection = new PsoSTRFSection();
@@ -476,6 +593,7 @@ namespace CodeWalker.GameFiles
                 var e = new PsoDataMappingEntry();
                 e.NameHash = b.StructureNameHash;
                 e.Length = b.TotalSize;
+                offset = AlignUp(offset);      //must match GetData()'s layout exactly
                 e.Offset = offset;
                 offset += b.TotalSize;
                 pso.DataMapSection.Entries[i] = e;

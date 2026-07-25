@@ -53,6 +53,10 @@ namespace CodeWalker.GameFiles
 
                 Array.Clear(data, 0, infos.StructureLength); //shouldn't really be necessary...
 
+                //Start from the source file's bytes for this structure type so padding
+                //and sentinel defaults that never appear in the XML aren't zeroed out.
+                pb.SeedStructure(type, data);
+
                 PsoStructureEntryInfo arrEntry = null;
 
 
