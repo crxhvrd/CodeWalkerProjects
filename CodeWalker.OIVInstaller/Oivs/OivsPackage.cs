@@ -97,8 +97,9 @@ namespace CodeWalker.OIVInstaller
 
         private void LoadInternal(string oivsPath)
         {
-            _tempDirectory = Path.Combine(Path.GetTempPath(), "OivsInstaller_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(_tempDirectory);
+            // .oivs packages are routinely multi-gigabyte; PackageTempSpace falls back
+            // off the system drive when %TEMP% hasn't the room to unpack them.
+            _tempDirectory = PackageTempSpace.Create(oivsPath, "OivsInstaller_");
 
             ZipFile.ExtractToDirectory(oivsPath, _tempDirectory);
 

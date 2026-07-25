@@ -77,10 +77,10 @@ namespace CodeWalker.OIVInstaller
 
         private void LoadInternal(string oivPath)
         {
-            // OIV files are ZIP archives
-            _tempDirectory = Path.Combine(Path.GetTempPath(), "OIVInstaller_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(_tempDirectory);
-            
+            // OIV files are ZIP archives. Unpacking a multi-gigabyte package needs
+            // room: PackageTempSpace falls back off a full system drive.
+            _tempDirectory = PackageTempSpace.Create(oivPath, "OIVInstaller_");
+
             ZipFile.ExtractToDirectory(oivPath, _tempDirectory);
             
             ContentPath = Path.Combine(_tempDirectory, "content");
@@ -519,6 +519,60 @@ namespace CodeWalker.OIVInstaller
                 throw new FileNotFoundException($"Content file not found: {relativePath}", fullPath);
             }
             return File.ReadAllBytes(fullPath);
+        }
+
+        /// <summary>
+        /// Size of a content file in bytes, or -1 when it can't be determined.
+        /// Lets callers pick a streaming path before trying to allocate a byte[].
+        /// </summary>
+        public long GetContentFileSize(string relativePath)
+        {
+            try
+            {
+                if (SourceRpf != null)
+                {
+                    var entry = FindContentEntry(relativePath);
+                    return entry?.GetFileSize() ?? -1;
+                }
+                var fi = new FileInfo(GetContentFilePath(relativePath));
+                return fi.Exists ? fi.Length : -1;
+            }
+            catch { return -1; }
+        }
+
+        /// <summary>
+        /// Copies a content file to <paramref name="destPath"/> WITHOUT loading it into
+        /// memory. byte[] (and File.ReadAllBytes) top out just under 2 GB, so packages
+        /// shipping a prebuilt multi-gigabyte dlc.rpf or texture archive can only be
+        /// installed by streaming. File.Copy also lets Windows do the copy itself,
+        /// which is far faster than a read-all/write-all round trip for big payloads.
+        /// </summary>
+        public void CopyContentFileTo(string relativePath, string destPath)
+        {
+            if (SourceRpf != null)
+            {
+                // RPF-sourced package: entries are bounded by the RPF format, so the
+                // in-memory extract is safe here.
+                var entry = FindContentEntry(relativePath)
+                    ?? throw new FileNotFoundException($"Content file not found in RPF: {relativePath}");
+                File.WriteAllBytes(destPath, SourceRpf.ExtractFile(entry));
+                return;
+            }
+
+            var fullPath = GetContentFilePath(relativePath);
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"Content file not found: {relativePath}", fullPath);
+            }
+            File.Copy(fullPath, destPath, true);
+        }
+
+        /// <summary>Locates a content entry inside an RPF-sourced package.</summary>
+        private RpfFileEntry FindContentEntry(string relativePath)
+        {
+            string searchPath = relativePath.Replace("/", "\\");
+            return FindRpfEntry(SourceRpf.Root, searchPath)
+                ?? FindRpfEntry(SourceRpf.Root, Path.Combine("content", searchPath));
         }
 
         private RpfFileEntry FindRpfEntry(RpfDirectoryEntry dir, string path)

@@ -26,6 +26,10 @@ namespace CodeWalker.OIVInstaller
         private BackupSession _backupSession;
         private bool _skipBackup = false;
 
+        /// <summary>Largest file that can be packed into an RPF entry: the CLR's
+        /// byte[] ceiling. Files bound for the file system stream and have no limit.</summary>
+        private const long MaxRpfEntryBytes = 2_147_483_591L;
+
         public OivInstaller(string gameFolder, OivPackage package, Action<string> logAction = null)
         {
             GameFolder = gameFolder;
@@ -234,6 +238,19 @@ namespace CodeWalker.OIVInstaller
 
             try
             {
+                // A file stored INSIDE an RPF has to pass through a byte[], which tops
+                // out just under 2 GB. Say that plainly rather than surfacing .NET's
+                // "The file is too long" — a payload this big belongs on the file
+                // system (a dlcpacks entry), not packed into an archive.
+                long srcSize = Package.GetContentFileSize(op.Source);
+                if (srcSize > MaxRpfEntryBytes)
+                {
+                    Log($"ERROR: {op.Source} is {FormatSize(srcSize)}, too large to store inside " +
+                        $"{Path.GetFileName(rpf.Path)} (limit {FormatSize(MaxRpfEntryBytes)} per file in an archive). " +
+                        "Install a file this large straight to the game folder instead — e.g. as a dlcpacks dlc.rpf.");
+                    return;
+                }
+
                 // Read source file from OIV package
                 byte[] fileData = Package.ReadContentFile(op.Source);
 
@@ -376,16 +393,24 @@ namespace CodeWalker.OIVInstaller
             {
                 // Normalize destination path
                 string destPath = op.Destination.Replace("/", "\\").TrimStart('\\');
-                
+
                 string targetFolder = GameFolder;
                 string modsFolder = Path.Combine(GameFolder, "mods");
-                
+
+                // A package may already spell the destination out as "mods\...". Strip
+                // that prefix so it isn't re-applied below into mods\mods\... (same
+                // normalization GetOrCopyRpfToMods does for archive paths).
+                bool destWasModsPrefixed =
+                    destPath.StartsWith("mods\\", StringComparison.OrdinalIgnoreCase);
+                if (destWasModsPrefixed) destPath = destPath.Substring(5);
+
                 // Determine if this should go to mods folder
                 // RPF files, or files going to update/ or x64/ typically belong in mods
-                bool useMods = destPath.StartsWith("update", StringComparison.OrdinalIgnoreCase) ||
+                bool useMods = destWasModsPrefixed ||
+                               destPath.StartsWith("update", StringComparison.OrdinalIgnoreCase) ||
                                destPath.StartsWith("x64", StringComparison.OrdinalIgnoreCase) ||
                                destPath.EndsWith(".rpf", StringComparison.OrdinalIgnoreCase);
-                               
+
                 if (useMods)
                 {
                     // Ensure mods folder exists if we're using it
@@ -407,23 +432,25 @@ namespace CodeWalker.OIVInstaller
                     Log($"  Created directory: {destDir}");
                 }
 
-                // Read source file from OIV package
-                byte[] fileData = Package.ReadContentFile(op.Source);
-
                 // --- BACKUP LOGIC ---
                 // destPath is relative to GameFolder?? No, wait.
                 // op.Destination is relative to game folder for top level adds
                 // fullDestPath is absolute path.
                 // We need relative path for backup manager
-                
+
                 string relativeDestPath = fullDestPath.Substring(GameFolder.Length).TrimStart(Path.DirectorySeparatorChar);
                 Log($"  Backing up: {relativeDestPath}");
                 if (!_skipBackup) _backupSession.BackupFile(relativeDestPath);
                 // --------------------
 
-                // Write to game folder
-                File.WriteAllBytes(fullDestPath, fileData);
-                Log($"  Copied to game: {destPath} ({fileData.Length} bytes)");
+                // Stream the file to the game folder. This is deliberately NOT
+                // ReadAllBytes+WriteAllBytes: byte[] caps out just under 2 GB, which
+                // made packages shipping a prebuilt multi-gigabyte dlc.rpf fail with
+                // "The file is too long". Copying also keeps memory flat.
+                long size = Package.GetContentFileSize(op.Source);
+                EnsureDiskSpace(fullDestPath, size, destPath);
+                Package.CopyContentFileTo(op.Source, fullDestPath);
+                Log($"  Copied to game: {destPath} ({FormatSize(size >= 0 ? size : new FileInfo(fullDestPath).Length)})");
             }
             catch (Exception ex)
             {
@@ -1521,6 +1548,44 @@ namespace CodeWalker.OIVInstaller
                     Log($"  ERROR: Failed to write file {fullPath}: {ex.Message}");
                 }
             }
+        }
+
+        /// <summary>
+        /// Fails fast with a readable message when the destination drive can't hold an
+        /// incoming file. Multi-gigabyte packages otherwise die deep inside the copy
+        /// with a bare "There is not enough space on the disk".
+        /// </summary>
+        private void EnsureDiskSpace(string destFullPath, long requiredBytes, string label)
+        {
+            if (requiredBytes <= 0) return;
+
+            long free;
+            string driveName;
+            try
+            {
+                var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(destFullPath)));
+                if (!drive.IsReady) return;
+                free = drive.AvailableFreeSpace;
+                driveName = drive.Name;
+            }
+            catch { return; }   // probing is best-effort; never block an install over it
+
+            if (free < requiredBytes)
+            {
+                throw new IOException(
+                    $"Not enough free space on {driveName} to install {label}: " +
+                    $"needs {FormatSize(requiredBytes)}, only {FormatSize(free)} free.");
+            }
+        }
+
+        /// <summary>Human-readable byte count for install log lines.</summary>
+        private static string FormatSize(long bytes)
+        {
+            if (bytes < 0) return "unknown size";
+            if (bytes >= 1L << 30) return $"{bytes / 1024.0 / 1024.0 / 1024.0:N2} GB";
+            if (bytes >= 1L << 20) return $"{bytes / 1024.0 / 1024.0:N1} MB";
+            if (bytes >= 1024) return $"{bytes / 1024.0:N1} KB";
+            return $"{bytes} bytes";
         }
 
         /// <summary>
