@@ -78,6 +78,7 @@ namespace CodeWalker.GameFiles
                         continue;
                     }
 
+
                     switch (entry.Type)
                     {
                         case PsoDataType.Array:
@@ -248,15 +249,15 @@ namespace CodeWalker.GameFiles
                                         //ErrorXml(sb, cind, ename + ": Unexpected Enum subtype: " + entry.Unk_5h.ToString());
                                         break;
                                     case 0: //int enum
-                                        int ival = GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type);
+                                        int ival = GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type, pb);
                                         Write(ival, data, entry.DataOffset);
                                         break;
                                     case 1: //short enum?
-                                        short sval = (short)GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type);
+                                        short sval = (short)GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type, pb);
                                         Write(sval, data, entry.DataOffset);
                                         break;
                                     case 2: //byte enum
-                                        byte bval = (byte)GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type);
+                                        byte bval = (byte)GetEnumInt((MetaName)entry.ReferenceKey, cnode.InnerText, entry.Type, pb);
                                         data[entry.DataOffset] = bval;
                                         break;
                                 }
@@ -682,7 +683,12 @@ namespace CodeWalker.GameFiles
 
                         if (arrEntry.ReferenceKey != 0)
                         {
-                            var _infos = PsoTypes.GetEnumInfo((MetaName)arrEntry.ReferenceKey);
+                            // Use the edited file's own enum definitions, not the built-in
+                            // tables: an enum they don't know about resolved to nothing and
+                            // every element was written as 0, silently emptying arrays like
+                            // carcols.ymt's turnOffBones.
+                            var _infos = pb.GetEnumInfo((MetaName)arrEntry.ReferenceKey);
+                            if (_infos == null) break;
                             pb.AddEnumInfo(_infos.IndexInfo.NameHash);
 
                             var values = new uint[hashes.Length];
@@ -1164,9 +1170,12 @@ namespace CodeWalker.GameFiles
         }
 
 
-        private static int GetEnumInt(MetaName type, string enumString, PsoDataType dataType)
+        private static int GetEnumInt(MetaName type, string enumString, PsoDataType dataType, PsoBuilder pb = null)
         {
-            var infos = PsoTypes.GetEnumInfo(type);
+            // Prefer the edited file's own enum definitions. The built-in tables can
+            // hold the same enum with different member keys, which silently mapped a
+            // name onto the wrong value (carcols.ymt: mod_col_3 became extra_10).
+            var infos = (pb != null) ? pb.GetEnumInfo(type) : PsoTypes.GetEnumInfo(type);
 
             if (infos == null)
             {
