@@ -95,7 +95,10 @@ namespace CodeWalker.GameFiles
         {
             var pso = XmlPso.GetPso(doc, source);
             if ((pso.DataSection == null) || (pso.DataMapSection == null) || (pso.SchemaSection == null)) return null;
-            return pso.Save();
+            var data = pso.Save();
+            //A rebuilt file needs its CHKS chunk recomputed, or the game rejects it.
+            PsoChecksum.Update(data);
+            return data;
         }
         public static byte[] GetRBFData(XmlDocument doc)
         {
