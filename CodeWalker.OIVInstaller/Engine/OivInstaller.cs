@@ -794,15 +794,24 @@ namespace CodeWalker.OIVInstaller
                     {
                         int trimLen = 0;
                         MetaFormat format = XmlMeta.GetXMLFormat(virtualXmlName, out trimLen);
-                        newData = XmlMeta.GetData(xmlDoc, format, virtualXmlName);
-                        Log($"  Recompiled XML back to binary {ext}.");
+                        newData = XmlMeta.GetData(xmlDoc, format, virtualXmlName,
+                            GetSchemaSource(fileEntry, data));
+
+                        if (!VerifyMetaRebuild(newData, xmlDoc, fileName, out string why))
+                        {
+                            Log($"  ERROR: {fileName} was NOT modified — {why}.");
+                            Log($"         The original file has been left untouched to avoid corrupting it.");
+                            return;
+                        }
+                        Log($"  Recompiled XML back to binary {ext} (verified lossless).");
                     }
                     else
                     {
                         using (var sw = new StringWriterWithEncoding(Encoding.UTF8))
                         {
                             xmlDoc.Save(sw);
-                            newData = Encoding.UTF8.GetBytes(sw.ToString());
+                            newData = Encoding.UTF8.GetBytes(
+                                XmlTextUtil.PreserveDeclaration(xmlContent, sw.ToString()));
                         }
                     }
                 }
@@ -1501,7 +1510,15 @@ namespace CodeWalker.OIVInstaller
                 {
                     int trimLen = 0;
                     MetaFormat format = XmlMeta.GetXMLFormat(virtualXmlName.ToLowerInvariant(), out trimLen);
-                    newBytes = XmlMeta.GetData(xmlDoc, format, virtualXmlName);
+                    newBytes = XmlMeta.GetData(xmlDoc, format, virtualXmlName,
+                        GetSchemaSource(fileEntry, fileData));
+
+                    if (!VerifyMetaRebuild(newBytes, xmlDoc, fileName, out string why))
+                    {
+                        Log($"  ERROR: {fileName} was NOT modified — {why}.");
+                        Log($"         The original file has been left untouched to avoid corrupting it.");
+                        return;
+                    }
                 }
             }
             catch (Exception ex)
@@ -1549,6 +1566,180 @@ namespace CodeWalker.OIVInstaller
                 }
             }
         }
+
+        /// <summary>
+        /// The Meta/PsoFile behind a decompiled game file. Handing this to the
+        /// recompiler makes it rebuild using the schema the file itself declares
+        /// rather than CodeWalker's built-in tables, which is what keeps fields those
+        /// tables don't know about (newer game builds, padding entries) from being
+        /// dropped. Mirrors MetaXml.GetXml's extension routing.
+        /// </summary>
+        private static object GetSchemaSource(RpfFileEntry entry, byte[] data)
+        {
+            if (entry == null || data == null) return null;
+            try
+            {
+                string n = entry.NameLower ?? "";
+                if (n.EndsWith(".ymt"))
+                { var f = RpfFile.GetFile<YmtFile>(entry, data); return (object)f?.Meta ?? f?.Pso; }
+                if (n.EndsWith(".ytyp"))
+                { var f = RpfFile.GetFile<YtypFile>(entry, data); return (object)f?.Meta ?? f?.Pso; }
+                if (n.EndsWith(".ymap"))
+                { var f = RpfFile.GetFile<YmapFile>(entry, data); return (object)f?.Meta ?? f?.Pso; }
+                if (n.EndsWith(".ymf"))
+                { var f = RpfFile.GetFile<YmfFile>(entry, data); return (object)f?.Meta ?? f?.Pso; }
+                if (n.EndsWith(".pso"))
+                { var f = RpfFile.GetFile<JPsoFile>(entry, data); return f?.Pso; }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Guards against silently gutting a game file.
+        ///
+        /// Every binary meta (.ymt/.ymap/.ytyp/.pso/.rel…) is edited by decompiling it
+        /// to XML and recompiling afterwards, but the recompiler cannot rebuild every
+        /// real-world layout faithfully — measured against a stock update.rpf, several
+        /// .ymt files come back with whole arrays emptied, and some scenario files
+        /// don't rebuild at all. Writing that back would leave the player with a
+        /// corrupt file and no warning.
+        ///
+        /// So: decompile what we just built and require it to still match the edit.
+        /// On mismatch the caller must leave the original file untouched.
+        /// </summary>
+        private bool VerifyMetaRebuild(byte[] rebuilt, XmlDocument intended, string fileName, out string reason)
+        {
+            reason = null;
+            if (rebuilt == null || rebuilt.Length == 0) { reason = "rebuild produced no data"; return false; }
+
+            string check;
+            try
+            {
+                byte[] probe = rebuilt;
+                var entry = CreateDiskFileEntry(fileName, fileName, ref probe);
+                check = MetaXml.GetXml(entry, probe, out _, "");
+            }
+            catch (Exception ex)
+            {
+                reason = "the rebuilt file could not be read back (" + ex.Message + ")";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(check)) { reason = "the rebuilt file could not be read back"; return false; }
+
+            XmlDocument after;
+            try { after = new XmlDocument(); after.LoadXml(check); }
+            catch (Exception ex) { reason = "the rebuilt file produced invalid XML (" + ex.Message + ")"; return false; }
+
+            if (!XmlEquivalent(intended.DocumentElement, after.DocumentElement, out string where))
+            {
+                reason = "the game's binary format could not be rebuilt without losing data (" + where + ")";
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>Structural XML comparison: element names, attributes and text,
+        /// ignoring whitespace and attribute order.</summary>
+        private static bool XmlEquivalent(XmlNode a, XmlNode b, out string where)
+        {
+            where = null;
+            if (a == null || b == null) { where = a == b ? null : "document root missing"; return a == b; }
+            if (!string.Equals(a.Name, b.Name, StringComparison.Ordinal))
+            {
+                where = $"<{a.Name}> became <{b.Name}>"; return false;
+            }
+
+            int ac = a.Attributes?.Count ?? 0, bc = b.Attributes?.Count ?? 0;
+            if (ac != bc) { where = $"<{a.Name}> attribute count {ac} -> {bc}"; return false; }
+            for (int i = 0; i < ac; i++)
+            {
+                var at = a.Attributes[i];
+                var bt = b.Attributes.GetNamedItem(at.Name);
+                if (bt == null || !ValuesMatch(at.Value, bt.Value))
+                {
+                    where = $"<{a.Name} {at.Name}> {at.Value} -> {bt?.Value ?? "(missing)"}"; return false;
+                }
+            }
+
+            var ae = Elements(a); var be = Elements(b);
+            if (ae.Count != be.Count)
+            {
+                where = $"<{a.Name}> child count {ae.Count} -> {be.Count}"; return false;
+            }
+            if (ae.Count == 0)
+            {
+                string at2 = (a.InnerText ?? "").Trim(), bt2 = (b.InnerText ?? "").Trim();
+                if (!ValuesMatch(at2, bt2))
+                {
+                    where = $"<{a.Name}> text \"{Trunc(at2)}\" -> \"{Trunc(bt2)}\""; return false;
+                }
+                return true;
+            }
+            for (int i = 0; i < ae.Count; i++)
+                if (!XmlEquivalent(ae[i], be[i], out where)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Compares two XML values the way the game reads them, not character by
+        /// character. A mod author writes value="500.00" and the recompiler writes it
+        /// back as value="500" — identical to the game, so treating that as data loss
+        /// would reject a perfectly good edit. Numbers compare numerically (with room
+        /// for float32 text round-tripping) and booleans case-insensitively; anything
+        /// else has to match exactly.
+        /// </summary>
+        private static bool ValuesMatch(string a, string b)
+        {
+            if (string.Equals(a, b, StringComparison.Ordinal)) return true;
+            if (a == null || b == null) return false;
+
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            var ns = System.Globalization.NumberStyles.Float;
+            if (double.TryParse(a, ns, ci, out double da) && double.TryParse(b, ns, ci, out double db))
+            {
+                double tol = 1e-6 * Math.Max(1.0, Math.Max(Math.Abs(da), Math.Abs(db)));
+                return Math.Abs(da - db) <= tol;
+            }
+            if (bool.TryParse(a, out bool ba) && bool.TryParse(b, out bool bb)) return ba == bb;
+            return false;
+        }
+
+        private static List<XmlNode> Elements(XmlNode n)
+        {
+            var list = new List<XmlNode>();
+            foreach (XmlNode c in n.ChildNodes)
+                if (c.NodeType == XmlNodeType.Element && !IsStructuralPadding(c.Name)) list.Add(c);
+            return list;
+        }
+
+        /// <summary>
+        /// Padding fields are alignment filler, not data. The game's own schemas declare
+        /// them (padding0, padding1…) but CodeWalker's built-in structure definitions
+        /// often don't, so a rebuilt file legitimately drops the declaration while
+        /// carrying identical information — true for roughly two thirds of stock
+        /// .ytyp/.ymap files. Treating that as data loss would block ordinary map and
+        /// prop edits, so padding is excluded from the comparison.
+        /// </summary>
+        private static bool IsStructuralPadding(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            foreach (var prefix in new[] { "padding", "Unused" })
+            {
+                if (name.Length > prefix.Length &&
+                    name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    for (int i = prefix.Length; i < name.Length; i++)
+                        if (!char.IsDigit(name[i])) return false;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string Trunc(string s) =>
+            string.IsNullOrEmpty(s) ? "" : (s.Length > 40 ? s.Substring(0, 40) + "…" : s);
 
         /// <summary>
         /// Fails fast with a readable message when the destination drive can't hold an

@@ -2106,7 +2106,10 @@ namespace CodeWalker.GameFiles
                 var cind = ind + 1;
                 for (int i = 0; i < itemCount; i++)
                 {
-                    var iname = HashString(arr[i]);
+                    // Hash strings can be arbitrary game data — dictionary.ymt's
+                    // reservedFSCharacters list literally contains "<", ">" and '"',
+                    // which produced unparseable XML when written raw.
+                    var iname = XmlEscape(HashString(arr[i]));
                     StringTag(sb, cind, "Item", iname);
                 }
                 CloseTag(sb, ind, name);
@@ -2128,7 +2131,10 @@ namespace CodeWalker.GameFiles
                 {
                     Indent(sb, aind);
                     sb.Append("<Item>");
-                    sb.Append(arr[n]);//TODO: escape this??!
+                    // Yes, escape it: these are arbitrary game strings. dictionary.ymt's
+                    // reservedFSCharacters list contains "<", ">" and '"' literally, and
+                    // writing them raw produced XML that could not be parsed back.
+                    sb.Append(XmlEscape(arr[n]));
                     sb.AppendLine("</Item>");
                 }
                 CloseTag(sb, ind, name);

@@ -157,10 +157,19 @@ namespace CodeWalker.GameFiles
 
 
 
+        /// <summary>ISO-8859-1: maps chars 0-255 one-to-one onto bytes.</summary>
+        private static readonly Encoding Latin1 = Encoding.GetEncoding(28591);
+
         public PsoBuilderPointer AddString(string str)
         {
             PsoBuilderBlock block = EnsureBlock((MetaName)1); //PsoSTRING seems to be 1 
-            byte[] data = Encoding.ASCII.GetBytes(str + (char)0);
+            // Latin1, not ASCII: strings are read back byte-for-byte (each byte becomes
+            // one char), so writing with ASCII replaced every char above 127 with '?'.
+            // Real game data has plenty of those — the profanity list in dictionary.ymt
+            // is full of accented and Cyrillic entries — and they were being destroyed
+            // on rebuild. Latin1 maps chars 0-255 straight back to bytes, exactly
+            // inverting the read.
+            byte[] data = Latin1.GetBytes(str + (char)0);
             int datalen = data.Length;
             int newlen = datalen;
             //int lenrem = newlen % 16;
@@ -244,11 +253,53 @@ namespace CodeWalker.GameFiles
 
 
 
+        // ---- schema of the file being edited ---------------------------------
+        // PsoTypes describes structures as they were when its tables were generated,
+        // but every PSO carries its own schema and newer game builds add fields the
+        // tables don't have. Rebuilding from the tables alone silently drops those
+        // fields, so prefer the source file's own definitions when we have them.
+        private Dictionary<MetaName, PsoStructureInfo> SourceStructureInfos;
+        private Dictionary<MetaName, PsoEnumInfo> SourceEnumInfos;
+
+        /// <summary>Adopt the structure/enum definitions of the file being edited.</summary>
+        public void UseSchemaFrom(PsoFile pso)
+        {
+            var entries = pso?.SchemaSection?.Entries;
+            if (entries == null) return;
+
+            SourceStructureInfos = new Dictionary<MetaName, PsoStructureInfo>();
+            SourceEnumInfos = new Dictionary<MetaName, PsoEnumInfo>();
+            foreach (var ent in entries)
+            {
+                if (ent?.IndexInfo == null) continue;
+                if (ent is PsoStructureInfo si && si.Entries != null)
+                    SourceStructureInfos[si.IndexInfo.NameHash] = si;
+                else if (ent is PsoEnumInfo ei && ei.Entries != null)
+                    SourceEnumInfos[ei.IndexInfo.NameHash] = ei;
+            }
+        }
+
+        /// <summary>Structure definition for a type: the edited file's own first.</summary>
+        public PsoStructureInfo GetStructureInfo(MetaName name)
+        {
+            if (SourceStructureInfos != null &&
+                SourceStructureInfos.TryGetValue(name, out var si) && si != null) return si;
+            return PsoTypes.GetStructureInfo(name);
+        }
+
+        /// <summary>Enum definition for a type: the edited file's own first.</summary>
+        public PsoEnumInfo GetEnumInfo(MetaName name)
+        {
+            if (SourceEnumInfos != null &&
+                SourceEnumInfos.TryGetValue(name, out var ei) && ei != null) return ei;
+            return PsoTypes.GetEnumInfo(name);
+        }
+
         public void AddStructureInfo(MetaName name)
         {
             if (!StructureInfos.ContainsKey(name))
             {
-                PsoStructureInfo si = PsoTypes.GetStructureInfo(name);
+                PsoStructureInfo si = GetStructureInfo(name);
                 if (si != null)
                 {
                     StructureInfos[name] = si;
@@ -259,7 +310,7 @@ namespace CodeWalker.GameFiles
         {
             if (!EnumInfos.ContainsKey(name))
             {
-                PsoEnumInfo ei = PsoTypes.GetEnumInfo(name);
+                PsoEnumInfo ei = GetEnumInfo(name);
                 if (ei != null)
                 {
                     EnumInfos[name] = ei;
@@ -274,7 +325,7 @@ namespace CodeWalker.GameFiles
 
             if (valType == 0)
             {
-                inf = PsoTypes.GetStructureInfo((MetaName)MetaTypeName.ARRAYINFO); //default ARRAYINFO with pointer
+                inf = GetStructureInfo((MetaName)MetaTypeName.ARRAYINFO); //default ARRAYINFO with pointer
                 if (!StructureInfos.ContainsKey(inf.IndexInfo.NameHash))
                 {
                     StructureInfos[inf.IndexInfo.NameHash] = inf;
@@ -282,7 +333,7 @@ namespace CodeWalker.GameFiles
                 return inf;
             }
 
-            var structInfo = PsoTypes.GetStructureInfo(valType);
+            var structInfo = GetStructureInfo(valType);
             if (structInfo == null)
             { }//error?
 

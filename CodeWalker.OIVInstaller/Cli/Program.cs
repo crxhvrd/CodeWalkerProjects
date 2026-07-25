@@ -12,6 +12,17 @@ namespace CodeWalker.OIVInstaller
         [STAThread]
         static int Main(string[] args)
         {
+            // Game data files are culture-neutral: floats are always written with a
+            // '.' separator. On a locale that uses ',' (most of Europe and Latin
+            // America) stray culture-dependent formatting turns 4.2 into "4,2", which
+            // reads back as 42 — a silent 10x change to real values inside .ymap/.ymt
+            // files. Pin the invariant culture so parsing and formatting can't drift
+            // with the user's regional settings.
+            var invariant = System.Globalization.CultureInfo.InvariantCulture;
+            System.Globalization.CultureInfo.DefaultThreadCurrentCulture = invariant;
+            System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = invariant;
+            System.Threading.Thread.CurrentThread.CurrentCulture = invariant;
+
             // GUI launch intent for the bundled Install.bat / Uninstall.bat:
             //   exe <package>            → open the GUI with the package loaded
             //   exe <package> --manage   → open the GUI and jump to Manage Mods

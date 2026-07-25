@@ -322,11 +322,61 @@ namespace CodeWalker.GameFiles
         Dictionary<MetaName, MetaStructureInfo> StructureInfos = new Dictionary<MetaName, MetaStructureInfo>();
         Dictionary<MetaName, MetaEnumInfo> EnumInfos = new Dictionary<MetaName, MetaEnumInfo>();
 
+        // ---- schema of the file being edited ---------------------------------
+        // MetaTypes describes structures as they were when its tables were generated.
+        // Real game files carry their own schema, and newer builds add or pad fields
+        // the tables don't know about — rebuilding purely from the tables silently
+        // drops those fields. So when we're editing an existing file, prefer the
+        // schema that file itself declares and fall back to the tables otherwise.
+        private Dictionary<MetaName, MetaStructureInfo> SourceStructureInfos;
+        private Dictionary<MetaName, MetaEnumInfo> SourceEnumInfos;
+
+        /// <summary>Adopt the structure/enum definitions of the file being edited.</summary>
+        public void UseSchemaFrom(Meta meta)
+        {
+            if (meta == null) return;
+
+            if (meta.StructureInfos != null)
+            {
+                SourceStructureInfos = new Dictionary<MetaName, MetaStructureInfo>();
+                foreach (var si in meta.StructureInfos)
+                {
+                    if (si?.Entries == null) continue;
+                    SourceStructureInfos[si.StructureNameHash] = si;
+                }
+            }
+            if (meta.EnumInfos != null)
+            {
+                SourceEnumInfos = new Dictionary<MetaName, MetaEnumInfo>();
+                foreach (var ei in meta.EnumInfos)
+                {
+                    if (ei?.Entries == null) continue;
+                    SourceEnumInfos[ei.EnumNameHash] = ei;
+                }
+            }
+        }
+
+        /// <summary>Structure definition for a type: the edited file's own first.</summary>
+        public MetaStructureInfo GetStructureInfo(MetaName name)
+        {
+            if (SourceStructureInfos != null &&
+                SourceStructureInfos.TryGetValue(name, out var si) && si != null) return si;
+            return MetaTypes.GetStructureInfo(name);
+        }
+
+        /// <summary>Enum definition for a type: the edited file's own first.</summary>
+        public MetaEnumInfo GetEnumInfo(MetaName name)
+        {
+            if (SourceEnumInfos != null &&
+                SourceEnumInfos.TryGetValue(name, out var ei) && ei != null) return ei;
+            return MetaTypes.GetEnumInfo(name);
+        }
+
         public void AddStructureInfo(MetaName name)
         {
             if (!StructureInfos.ContainsKey(name))
             {
-                MetaStructureInfo si = MetaTypes.GetStructureInfo(name);
+                MetaStructureInfo si = GetStructureInfo(name);
                 if (si != null)
                 {
                     StructureInfos[name] = si;
@@ -337,7 +387,7 @@ namespace CodeWalker.GameFiles
         {
             if (!EnumInfos.ContainsKey(name))
             {
-                MetaEnumInfo ei = MetaTypes.GetEnumInfo(name);
+                MetaEnumInfo ei = GetEnumInfo(name);
                 if (ei != null)
                 {
                     EnumInfos[name] = ei;

@@ -11,6 +11,25 @@ namespace CodeWalker.GameFiles
     {
 
 
+        /// <summary>
+        /// Rebuild binary data from XML.
+        /// </summary>
+        /// <param name="source">Optional: the file this XML was decompiled from. When
+        /// given, its embedded schema drives the rebuild instead of the built-in
+        /// MetaTypes/PsoTypes tables, so structures and fields those tables don't know
+        /// about (newer game builds, padding entries) survive the round trip.</param>
+        public static byte[] GetData(XmlDocument doc, MetaFormat mformat, string fpathin, object source)
+        {
+            switch (mformat)
+            {
+                case MetaFormat.RSC:
+                    return GetRSCData(doc, source as Meta);
+                case MetaFormat.PSO:
+                    return GetPSOData(doc, source as PsoFile);
+            }
+            return GetData(doc, mformat, fpathin);
+        }
+
         public static byte[] GetData(XmlDocument doc, MetaFormat mformat, string fpathin)
         {
             switch (mformat)
@@ -66,15 +85,15 @@ namespace CodeWalker.GameFiles
             }
             return null;
         }
-        public static byte[] GetRSCData(XmlDocument doc)
+        public static byte[] GetRSCData(XmlDocument doc, Meta source = null)
         {
-            var meta = GetMeta(doc);
+            var meta = GetMeta(doc, source);
             if ((meta.DataBlocks?.Data == null) || (meta.DataBlocks.Count == 0)) return null;
             return ResourceBuilder.Build(meta, 2); //meta is RSC V:2
         }
-        public static byte[] GetPSOData(XmlDocument doc)
+        public static byte[] GetPSOData(XmlDocument doc, PsoFile source = null)
         {
-            var pso = XmlPso.GetPso(doc);
+            var pso = XmlPso.GetPso(doc, source);
             if ((pso.DataSection == null) || (pso.DataMapSection == null) || (pso.SchemaSection == null)) return null;
             return pso.Save();
         }
@@ -359,9 +378,13 @@ namespace CodeWalker.GameFiles
 
 
 
-        public static Meta GetMeta(XmlDocument doc)
+        /// <param name="source">The file being edited, when there is one. Its embedded
+        /// schema is preferred over the built-in MetaTypes tables so fields those
+        /// tables don't know about (newer game builds, padding) survive the rebuild.</param>
+        public static Meta GetMeta(XmlDocument doc, Meta source = null)
         {
             MetaBuilder mb = new MetaBuilder();
+            mb.UseSchemaFrom(source);
 
             Traverse(doc.DocumentElement, mb, 0, true);
 
@@ -380,7 +403,7 @@ namespace CodeWalker.GameFiles
                 type = (MetaName)(uint)GetHash(node.Name);
             }
 
-            var infos = MetaTypes.GetStructureInfo(type);
+            var infos = mb.GetStructureInfo(type);
 
             if (infos != null)
             {
@@ -550,11 +573,11 @@ namespace CodeWalker.GameFiles
                             {
                                 if (entry.ReferenceKey != 0)
                                 {
-                                    var _infos = MetaTypes.GetEnumInfo(entry.ReferenceKey);
-                                    mb.AddEnumInfo(_infos.EnumNameHash);
+                                    var _infos = mb.GetEnumInfo(entry.ReferenceKey);
+                                    if (_infos != null) mb.AddEnumInfo(_infos.EnumNameHash);
                                 }
 
-                                int val = GetEnumInt(entry.ReferenceKey, cnode.InnerText, entry.DataType);
+                                int val = GetEnumInt(entry.ReferenceKey, cnode.InnerText, entry.DataType, mb);
                                 Write(val, data, entry.DataOffset);
                                 break;
                             }
@@ -563,11 +586,11 @@ namespace CodeWalker.GameFiles
                             {
                                 if (entry.ReferenceKey != 0)
                                 {
-                                    var _infos = MetaTypes.GetEnumInfo(entry.ReferenceKey);
-                                    mb.AddEnumInfo(_infos.EnumNameHash);
+                                    var _infos = mb.GetEnumInfo(entry.ReferenceKey);
+                                    if (_infos != null) mb.AddEnumInfo(_infos.EnumNameHash);
                                 }
 
-                                int val = GetEnumInt(entry.ReferenceKey, cnode.InnerText, entry.DataType);
+                                int val = GetEnumInt(entry.ReferenceKey, cnode.InnerText, entry.DataType, mb);
                                 Write((short)val, data, entry.DataOffset);
                                 break;
                             }
@@ -1108,7 +1131,7 @@ namespace CodeWalker.GameFiles
             return chunks.ToArray();
         }
 
-        private static int GetEnumInt(MetaName type, string enumString, MetaStructureEntryDataType dataType)
+        private static int GetEnumInt(MetaName type, string enumString, MetaStructureEntryDataType dataType, MetaBuilder mb = null)
         {
             var intval = 0;
             if (int.TryParse(enumString, out intval))
@@ -1116,7 +1139,7 @@ namespace CodeWalker.GameFiles
                 return intval; //it's already an int.... maybe enum not found or has no entries... or original value didn't match anything
             }
 
-            var infos = MetaTypes.GetEnumInfo(type);
+            var infos = mb != null ? mb.GetEnumInfo(type) : MetaTypes.GetEnumInfo(type);
             if (infos == null)
             {
                 return 0;

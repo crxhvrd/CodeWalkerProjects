@@ -12,9 +12,13 @@ namespace CodeWalker.GameFiles
     public class XmlPso
     {
 
-        public static PsoFile GetPso(XmlDocument doc)
+        /// <param name="source">The file being edited, when there is one. Its embedded
+        /// schema is preferred over the built-in PsoTypes tables so fields those tables
+        /// don't know about survive the rebuild.</param>
+        public static PsoFile GetPso(XmlDocument doc, PsoFile source = null)
         {
             PsoBuilder pb = new PsoBuilder();
+            pb.UseSchemaFrom(source);
 
             Traverse(doc.DocumentElement, pb, 0, true);
 
@@ -32,7 +36,7 @@ namespace CodeWalker.GameFiles
                 type = (MetaName)(uint)GetHash(node.Name);
             }
 
-            var infos = PsoTypes.GetStructureInfo(type);
+            var infos = pb.GetStructureInfo(type);
             if (infos != null)
             {
                 byte[] data = new byte[infos.StructureLength];
@@ -267,7 +271,7 @@ namespace CodeWalker.GameFiles
                                 MetaName fEnum = (MetaName)(fEnt?.ReferenceKey ?? 0);
                                 if ((fEnt != null) && (fEnt.EntryNameHash == (MetaName)MetaTypeName.ARRAYINFO))
                                 {
-                                    flagsInfo = PsoTypes.GetEnumInfo(fEnum);
+                                    flagsInfo = pb.GetEnumInfo(fEnum);
                                 }
                                 if (flagsInfo == null)
                                 {

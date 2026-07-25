@@ -284,9 +284,20 @@ namespace CodeWalker.OIVInstaller
                 else if (entry.Action == BackupAction.Edited)
                 {
                     bool success = false;
-                    
+
+                    // Smart revert re-applies the inverse edit to the CURRENT file, so
+                    // other mods' changes to the same file survive. That only works on
+                    // text: a binary meta would have to be decompiled, edited and
+                    // recompiled, and a recompile is never byte-identical to what
+                    // Rockstar shipped. We hold the original bytes, so for binary
+                    // formats restore those verbatim and get the vanilla file back
+                    // exactly.
+                    if (IsBinaryGameFile(backupFolder, entry.BackupPath))
+                    {
+                        FileLog($"[Revert] {fileName} is a binary game file - restoring original bytes instead of rebuilding.");
+                    }
                     // Try smart text revert
-                    if (entry.TextOperations != null && entry.TextOperations.Count > 0)
+                    else if (entry.TextOperations != null && entry.TextOperations.Count > 0)
                         success = PerformSmartRpfTextRevert(dir, fileName, entry.TextOperations);
                     // Try smart XML revert
                     else if (entry.XmlOperations != null && entry.XmlOperations.Count > 0)
@@ -504,7 +515,7 @@ namespace CodeWalker.OIVInstaller
                                 // We trim for comparison robustness
                                 if (child.OuterXml.Trim() == op.AddedXml.Trim())
                                 {
-                                    parent.RemoveChild(child);
+                                    RemoveNodeAndItsPadding(parent, child);
                                     removed = true;
                                     break; // Only remove one instance?
                                 }
@@ -522,7 +533,7 @@ namespace CodeWalker.OIVInstaller
                                      {
                                          if (child.OuterXml.Trim() == op.AddedXml.Trim())
                                          {
-                                             actualParent.RemoveChild(child);
+                                             RemoveNodeAndItsPadding(actualParent, child);
                                              removed = true;
                                              break;
                                          }
@@ -564,14 +575,42 @@ namespace CodeWalker.OIVInstaller
                     }
                 }
                 
-                // Save
+                // Save. Keep the file's own XML declaration so a reverted file matches
+                // vanilla byte-for-byte instead of differing on encoding="utf-8".
                 using (var sw = new StringWriterWithEncoding(System.Text.Encoding.UTF8))
                 {
                     xmlDoc.Save(sw);
-                    byte[] newData = System.Text.Encoding.UTF8.GetBytes(sw.ToString());
+                    byte[] newData = System.Text.Encoding.UTF8.GetBytes(
+                        XmlTextUtil.PreserveDeclaration(xmlContent, sw.ToString()));
                     RpfFile.CreateFile(dir, fileName, newData, true);
                 }
                 return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Does the stored backup start with one of RAGE's binary container magics?
+        /// RSC7 = resource (.ytyp/.ymap/…), PSIN = PSO meta, RBF0 = RBF meta.
+        /// Anything else (plain XML, .meta, .txt) is treated as text.
+        /// </summary>
+        private bool IsBinaryGameFile(string backupFolder, string backupPath)
+        {
+            if (string.IsNullOrEmpty(backupPath)) return false;
+            try
+            {
+                string backupFile = Path.Combine(backupFolder, backupPath);
+                if (!File.Exists(backupFile)) return false;
+
+                var head = new byte[4];
+                using (var fs = File.OpenRead(backupFile))
+                {
+                    if (fs.Read(head, 0, 4) < 4) return false;
+                }
+                uint magic = BitConverter.ToUInt32(head, 0);
+                return magic == 0x37435352   // "RSC7"
+                    || magic == 0x4E495350   // "PSIN"
+                    || magic == 0x30464252;  // "RBF0"
             }
             catch { return false; }
         }
@@ -599,6 +638,41 @@ namespace CodeWalker.OIVInstaller
 
             RpfFile.CreateFile(dir, fileName, data, true);
         }
+
+        /// <summary>
+        /// Removes a node that an install added, along with the indentation the
+        /// installer inserted with it.
+        ///
+        /// ApplyXmlAddOperation wraps new content in "\r\n\t\t" … "\r\n\t" so the file
+        /// stays readable. Removing only the element leaves those text nodes behind,
+        /// so an install/uninstall cycle grew the file by 7 bytes every time and never
+        /// returned it to its vanilla bytes.
+        /// </summary>
+        private static void RemoveNodeAndItsPadding(XmlNode parent, XmlNode child)
+        {
+            var before = child.PreviousSibling;
+            var after = child.NextSibling;
+
+            parent.RemoveChild(child);
+
+            // Only ever drop whitespace-only text — never real content.
+            if (IsWhitespaceText(before) && IsWhitespaceText(after))
+            {
+                // The add contributed one leading and one trailing run; dropping the
+                // leading one restores the original spacing between siblings.
+                parent.RemoveChild(before);
+            }
+            else if (IsWhitespaceText(before) && after == null)
+            {
+                parent.RemoveChild(before);
+            }
+        }
+
+        private static bool IsWhitespaceText(XmlNode n) =>
+            n != null
+            && (n.NodeType == XmlNodeType.Whitespace
+                || n.NodeType == XmlNodeType.SignificantWhitespace
+                || (n.NodeType == XmlNodeType.Text && string.IsNullOrWhiteSpace(n.Value)));
 
         private bool PerformSmartTextRevert(string fullPath, List<TextEditOperation> ops)
         {

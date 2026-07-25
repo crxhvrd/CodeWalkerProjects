@@ -39,6 +39,8 @@ namespace CodeWalker.OIVInstaller
             return node;
         }
 
+        // (see XmlTextUtil below for the save-side counterpart)
+
         // lhs="Value" / lhs='Value' → translate(lhs,'a…z','A…Z')="VALUE".
         // XPath 1.0 has no lower-case(); translate() is the standard workaround.
         internal static string RelaxComparisons(string xpath)
@@ -52,6 +54,29 @@ namespace CodeWalker.OIVInstaller
                     string quote = val.Contains('"') ? "'" : "\"";
                     return $"translate({m.Groups["lhs"].Value},'{Lower}','{Upper}')={quote}{val.ToUpperInvariant()}{quote}";
                 });
+        }
+    }
+
+    internal static class XmlTextUtil
+    {
+        /// <summary>
+        /// Puts the file's original XML declaration back after a save.
+        ///
+        /// XmlDocument.Save() rewrites the declaration from the writer's encoding, so
+        /// the game's <c>&lt;?xml version="1.0" encoding="UTF-8"?&gt;</c> comes back as
+        /// lowercase <c>utf-8</c>. Parsers don't care, but it means every edited file
+        /// differs from vanilla on its very first line — so an uninstall could never
+        /// restore it byte-for-byte, and diffs were noisy for no reason.
+        /// </summary>
+        public static string PreserveDeclaration(string original, string updated)
+        {
+            if (string.IsNullOrEmpty(original) || string.IsNullOrEmpty(updated)) return updated;
+
+            var o = Regex.Match(original, @"^﻿?<\?xml[^>]*\?>");
+            var u = Regex.Match(updated, @"^﻿?<\?xml[^>]*\?>");
+            if (!o.Success || !u.Success || o.Value == u.Value) return updated;
+
+            return o.Value + updated.Substring(u.Length);
         }
     }
 }
