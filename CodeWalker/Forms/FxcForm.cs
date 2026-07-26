@@ -637,6 +637,8 @@ namespace CodeWalker.Forms
                     if (r != DialogResult.Yes) return;
                 }
 
+                if (!EnsureRootSignature(s, ref bytes, out string rsNote)) return;
+
                 int oldSize = (int)s.Size;
                 s.Binary = bytes;
                 s.Size = (uint)bytes.Length;
@@ -645,8 +647,78 @@ namespace CodeWalker.Forms
                 // resource layout differs from the original.
 
                 LoadAwcShader(s);
-                StatusLabel.Text = "Imported " + s.Name + " (" + oldSize + " -> " + bytes.Length + " bytes)";
+                StatusLabel.Text = "Imported " + s.Name + " (" + oldSize + " -> " + bytes.Length + " bytes)"
+                                 + (string.IsNullOrEmpty(rsNote) ? "" : " — " + rsNote);
             }
+        }
+
+        /// <summary>
+        /// Makes sure the incoming shader keeps a root signature the game can build a PSO
+        /// from, transplanting the original's with dxc when it has to. Returns false when
+        /// the import must be abandoned; on true, <paramref name="bytes"/> holds what should
+        /// actually be written, which is not always what was on disk.
+        ///
+        /// Every stock Enhanced shader embeds one, so this fires on essentially every import.
+        /// Writing a blob without it produces an archive that looks perfectly valid and a
+        /// shader the game cannot create a pipeline for.
+        /// </summary>
+        private bool EnsureRootSignature(AwcShader s, ref byte[] bytes, out string note)
+        {
+            note = null;
+            var check = ShaderRootSignature.Check(s.Binary, bytes);
+
+            if (check.SafeAsIs)
+            {
+                note = check.Verdict == RootSigVerdict.AlreadyMatches ? "root signature preserved" : null;
+                return true;
+            }
+
+            if (check.Verdict == RootSigVerdict.Differs || check.Verdict == RootSigVerdict.NotAContainer)
+            {
+                var r = MessageBox.Show(
+                    check.Message + "\n\nImport anyway?",
+                    "Root signature mismatch", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r != DialogResult.Yes) return false;
+                note = "root signature NOT verified";
+                return true;
+            }
+
+            // Missing: the original has one, the replacement doesn't. dxc can splice it on
+            // and re-sign; an SM6 container is hash-signed, so this cannot be done in
+            // managed code and there is no fallback if dxc is absent.
+            string dxc = ShaderRootSignature.FindDxc(Properties.Settings.Default.DxcPath);
+            if (dxc == null)
+            {
+                MessageBox.Show(
+                    check.Message + "\n\nThe root signature can be copied across automatically, "
+                    + "but that needs dxc.exe, which was not found.\n\nPut dxc.exe (with "
+                    + "dxcompiler.dll and dxil.dll) in a \"dxcompilers\" folder next to "
+                    + "CodeWalker.exe, or set its path in Settings.\n\nThe import has been "
+                    + "cancelled — writing this shader as-is would fail pipeline creation in game.",
+                    "Root signature missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+
+            Cursor = Cursors.WaitCursor;
+            bool ok;
+            byte[] patched;
+            string msg;
+            try { ok = ShaderRootSignature.TryTransplant(s.Binary, bytes, dxc, out patched, out msg); }
+            finally { Cursor = Cursors.Default; }
+
+            if (!ok)
+            {
+                MessageBox.Show(
+                    msg + "\n\nThe import has been cancelled and the shader left unchanged. "
+                    + "This is the check working: injecting it would most likely crash the game "
+                    + "at pipeline creation.",
+                    "Root signature incompatible", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+
+            bytes = patched;
+            note = "root signature transplanted";
+            return true;
         }
 
         private void ExportAllMenuItem_Click(object sender, EventArgs e)

@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <PackageReference Include="System.Resources.Extensions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Direct3D.DXC" Version="1.8.2505.32" GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="DockPanelSuite.ThemeVS2015" Version="3.0.6" />
     <PackageReference Include="FCTB" Version="2.16.24" />
     <PackageReference Include="SharpDX" Version="4.2.0" />
@@ -61,6 +62,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\Shaders\*.cso" LinkBase="Shaders">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- dxc transplants a shader's root signature on CSO import; see
+         ShaderRootSignature. Native binaries only, so the managed assets are excluded
+         and the three files are copied out beside the other native dependencies. -->
+    <None Include="$(PkgMicrosoft_Direct3D_DXC)\build\native\bin\x64\dxc.exe;$(PkgMicrosoft_Direct3D_DXC)\build\native\bin\x64\dxcompiler.dll;$(PkgMicrosoft_Direct3D_DXC)\build\native\bin\x64\dxil.dll"
+          Condition="'$(PkgMicrosoft_Direct3D_DXC)' != ''">
+      <Link>%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

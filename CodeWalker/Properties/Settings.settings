@@ -23,6 +23,9 @@
     <Setting Name="ExtractedRawFilesFolder" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
+    <Setting Name="DxcPath" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
     <Setting Name="ExtractedShadersFolder" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>

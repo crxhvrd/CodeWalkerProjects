@@ -110,6 +110,18 @@ namespace CodeWalker.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DxcPath {
+            get {
+                return ((string)(this["DxcPath"]));
+            }
+            set {
+                this["DxcPath"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string ExtractedShadersFolder {
             get {
                 return ((string)(this["ExtractedShadersFolder"]));

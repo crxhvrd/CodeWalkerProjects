@@ -205,6 +205,31 @@ Structural changes (adding or removing array items) still take the full rebuild 
 
 ---
 
+## Shader libraries (`sga_*.awc`)
+
+GTA V Enhanced keeps its compiled shaders in `.awc` files — the same extension as audio wave containers, distinguished only by an `SGD2` magic. CodeWalker previously opened them as audio and failed. They now open in the shader viewer instead, and the file list labels them rather than showing the audio icon.
+
+The format reads and writes in full: browse effects, techniques and passes, inspect registers and constant buffers, export or replace individual `.cso` blobs, and export the whole library to XML and back. Round-tripping every shader library in a stock Enhanced install — 6 archives, 37,992 shaders — reproduces each one **byte for byte**, through both the binary path and a full XML export and re-import. Writing is gated behind Edit Mode, as everywhere else.
+
+### Root signatures are preserved on import
+
+Every one of those 37,992 shaders embeds a root signature in an `RTS0` chunk, and the game builds its pipeline state objects from it. HLSL recompiled with dxc emits no `RTS0`, so dropping a freshly compiled blob into a slot leaves the pipeline without the signature the game expects: PSO creation fails, and the shader either silently never runs or takes the game down. The archive is perfectly valid either way, so there is nothing to find by inspecting it.
+
+Importing a `.cso` therefore compares its root signature against the shader being replaced:
+
+| | |
+|---|---|
+| Replacement carries the original's signature | imported as-is |
+| Replacement carries a different one | flagged, your call |
+| Replacement carries none | signature transplanted from the original and the container re-signed |
+| Transplant rejected, or dxc unavailable | **import refused, shader left untouched** |
+
+A shader from a toolchain that already transplants the signature passes straight through and no external tool runs. Otherwise dxc does it — an SM6 container is hash-signed, so re-signing one is not something managed code can do. `dxc.exe`, `dxcompiler.dll` and `dxil.dll` are pulled in from the official `Microsoft.Direct3D.DXC` package and deployed beside the application's other native dependencies.
+
+The refusal is the point. Silently writing a shader that fails pipeline creation is far worse than a dialog saying no.
+
+---
+
 ## Known issues
 
 All of these are **fail-safe**: the installer's rebuild verification refuses the write and reports it, rather than producing a corrupt file.
