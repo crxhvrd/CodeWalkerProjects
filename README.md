@@ -61,6 +61,8 @@ Several classes of failure are handled explicitly.
 - **Case-insensitive XPath.** GTA's data names are joaat-hashed and therefore case-insensitive, but XPath is not, and the same name is spelled differently across game builds (`VEH_MID` versus `veh_mid`). Package XPaths are matched exactly first, then case-insensitively.
 - **Binary rebuild verification.** After a `<pso>` or `<xml>` edit to a binary file, the rebuilt file is decompiled again and compared against the intended result. If anything was lost the write is refused and the original left untouched — a visible failure rather than a silently corrupted game file.
 - **Culture independence.** Game data is culture-neutral: floats always use `.`. Both applications pin the invariant culture at startup so a comma-decimal locale cannot corrupt values written into game files. See [the locale bug](#3-locale-dependent-number-formatting) below for why this matters.
+- **Nested archives revert too.** An `<archive>` block can target an `.rpf` inside another `.rpf`, and edits there are backed up like any other. On uninstall the nested archive is reached by walking into the parent rather than being looked up as a path on disk, so those edits are genuinely undone instead of quietly left in place.
+- **Faithful resource backups.** A resource entry stored inside an archive is not required to begin with the `RSC7` magic that the same file carries once exported, so the backup rebuilds that header from the entry's own flags and keeps the stored payload byte for byte. Restores therefore return the exact original bytes.
 
 ### Requirements
 
@@ -209,7 +211,6 @@ All of these are **fail-safe**: the installer's rebuild verification refuses the
 
 - **Two PSO files render differently after a rebuild** — `animpostfx.ymt` and `junctions.pso`. Both are *stable fixed points*: they change once and then hold, so the data survives editing and repeated edits don't degrade it. The verification guard is stricter than it needs to be here and refuses them; accepting any file that passes a fixed-point check would unblock both.
 - **`shopping_cart_validation.ymt` decompiles to invalid XML.** Its element name is `CriminalCareerDefs::ShoppingCartItemCategoryLimits`, and `::` is illegal in an XML name. Fixing this requires a name-mangling scheme that round-trips in both directions, which is a decision about the XML format mod authors work with.
-- **Uninstall is not byte-exact for a resource inside a nested archive.** Reverting an edit to, say, a `.ytyp` within a nested `.rpf` returns a valid, correctly sized, loadable file that is not byte-identical to the original. Smart revert has been ruled out as the cause; the fault lies in the full-restore path (`RestoreFullRpfBackup` → `RpfFile.CreateFile`), and notably that same path restores a top-level file byte-exactly.
 
 ---
 

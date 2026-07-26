@@ -258,11 +258,12 @@ namespace CodeWalker.OIVInstaller
 
         private void RevertRpfEntry(FileBackupEntry entry, string backupFolder, IProgress<string> progress, UninstallMode mode)
         {
-            var rpfPath = Path.Combine(GameFolder, entry.RpfPath);
-            if (!File.Exists(rpfPath)) return;
-
-            var rpf = new RpfFile(rpfPath, Path.GetFileName(rpfPath));
-            rpf.ScanStructure(null, null);
+            var rpf = OpenRpfForRevert(entry.RpfPath);
+            if (rpf == null)
+            {
+                FileLog($"[Revert] Could not open {entry.RpfPath} - {entry.InternalPath} left as installed.");
+                return;
+            }
 
             var internalDir = Path.GetDirectoryName(entry.InternalPath);
             var fileName = Path.GetFileName(entry.InternalPath);
@@ -328,23 +329,20 @@ namespace CodeWalker.OIVInstaller
             {
                 vanillaRpfPath = vanillaRpfPath.Substring(5);
             }
-            string fullVanillaPath = Path.Combine(GameFolder, vanillaRpfPath);
-            
-            if (!File.Exists(fullVanillaPath))
-            {
-                 progress?.Report($"WARNING: Vanilla RPF not found: {vanillaRpfPath}. Cannot restore.");
-                 return;
-            }
-
-            // 2. Open Vanilla RPF
+            // 2. Open Vanilla RPF - may be nested, so resolve it the same way as the
+            // mods-side archive rather than assuming it is a file on disk.
             // NOTE: This requires keys to be initialized!
             // We assume calling code has done this.
-            
-            try 
+
+            try
             {
-                var vanillaRpf = new RpfFile(fullVanillaPath, Path.GetFileName(fullVanillaPath));
-                vanillaRpf.ScanStructure(null, null);
-                
+                var vanillaRpf = OpenRpfForRevert(vanillaRpfPath);
+                if (vanillaRpf == null)
+                {
+                    progress?.Report($"WARNING: Vanilla RPF not found: {vanillaRpfPath}. Cannot restore.");
+                    return;
+                }
+
                 // 3. Find File in Vanilla
                 var vInternalDir = Path.GetDirectoryName(entry.InternalPath);
                 var vFileName = Path.GetFileName(entry.InternalPath);
@@ -397,6 +395,67 @@ namespace CodeWalker.OIVInstaller
              if (file != null) RpfFile.DeleteEntry(file);
         }
         
+        /// <summary>
+        /// Opens the archive a backup entry refers to, which may be NESTED.
+        ///
+        /// RpfPath is whatever RpfFile.Path was at install time, so for an operation
+        /// inside a nested archive it reads like
+        ///     mods\update\update.rpf\dlc_patch\...\koreatown_metadata.rpf
+        /// which is not a path on disk. Treating it as one made File.Exists fail and
+        /// the revert return silently, leaving every nested edit installed forever.
+        /// Split at the first .rpf segment, open that physical archive, then walk the
+        /// child archives for whatever .rpf segments remain.
+        /// </summary>
+        private RpfFile OpenRpfForRevert(string rpfRelPath)
+        {
+            if (string.IsNullOrEmpty(rpfRelPath)) return null;
+
+            var parts = rpfRelPath.Replace('/', '\\').Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
+            int i = Array.FindIndex(parts, p => p.EndsWith(".rpf", StringComparison.OrdinalIgnoreCase));
+            if (i < 0) return null;
+
+            string rootRel = string.Join("\\", parts.Take(i + 1));
+            string physical = Path.Combine(GameFolder, rootRel);
+            if (!File.Exists(physical)) return null;
+
+            RpfFile root;
+            try
+            {
+                root = new RpfFile(physical, rootRel);
+                root.ScanStructure(null, null);
+            }
+            catch (Exception ex)
+            {
+                FileLog($"[Revert] Failed to scan {rootRel}: {ex.Message}");
+                return null;
+            }
+
+            if (i == parts.Length - 1) return root;
+
+            string nestedTail = string.Join("\\", parts.Skip(i + 1));
+            var nested = FindChildArchive(root, nestedTail);
+            if (nested == null)
+                FileLog($"[Revert] Nested archive not found: {nestedTail} in {rootRel}");
+            return nested;
+        }
+
+        private static RpfFile FindChildArchive(RpfFile root, string tail)
+        {
+            tail = "\\" + tail.TrimStart('\\');
+            var stack = new Stack<RpfFile>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var f = stack.Pop();
+                foreach (var c in f.Children ?? new List<RpfFile>())
+                {
+                    if (c.Path != null && c.Path.EndsWith(tail, StringComparison.OrdinalIgnoreCase)) return c;
+                    stack.Push(c);
+                }
+            }
+            return null;
+        }
+
         private RpfDirectoryEntry FindRpfDirectory(RpfFile rpf, string internalPath)
         {
             if (string.IsNullOrEmpty(internalPath)) return rpf.Root;
@@ -1042,15 +1101,30 @@ namespace CodeWalker.OIVInstaller
                      return null;
                 }
                 
-                // Read the RSC7 header (16 bytes) - this is NOT encrypted
+                // Read the 16-byte resource header. RSC7 is what a file exported to disk
+                // starts with, but an entry sitting inside an archive is NOT required to
+                // carry that magic - Rockstar's own entries frequently don't, and the
+                // engine never looks at it: RpfFile.ExtractFileResource skips these 16
+                // bytes unconditionally and inflates whatever follows. So the magic is a
+                // hint, not a validity test. What CreateFile needs on the way back in is
+                // an RSC7 header carrying the entry's real flags, which we can always
+                // rebuild from the entry itself.
                 byte[] header = br.ReadBytes(16);
-                
-                // Verify it's an RSC7 header
+
                 uint magic = BitConverter.ToUInt32(header, 0);
-                if (magic != 0x37435352) // 'RSC7'
+                if (magic != 0x37435352 && entry is RpfResourceFileEntry hres) // 'RSC7'
+                {
+                    header = new byte[16];
+                    BitConverter.GetBytes((uint)0x37435352).CopyTo(header, 0);
+                    BitConverter.GetBytes(hres.Version).CopyTo(header, 4);
+                    BitConverter.GetBytes(hres.SystemFlags).CopyTo(header, 8);
+                    BitConverter.GetBytes(hres.GraphicsFlags).CopyTo(header, 12);
+                    magic = 0x37435352;
+                }
+
+                if (magic != 0x37435352)
                 {
                     BackupManager.FileLog($"[RpfFileHelper] Warning: {entry.Name} (Type: {entry.GetType().Name}) has non-standard magic 0x{magic:X}.");
-                    
                     // Fallback to Binary Extraction
                     br.BaseStream.Position -= 16; // Rewind
                     byte[] binaryResult = ExtractBinary(entry, br, rpf);
@@ -1065,38 +1139,13 @@ namespace CodeWalker.OIVInstaller
                         }
                     }
                     
-                    // If we still don't have RSC7 header, and it IS a Resource Entry, synthesize it!
-                    if (entry is RpfResourceFileEntry resEntry && binaryResult != null)
-                    {
-                        BackupManager.FileLog($"[RpfFileHelper] Synthesizing RSC7 header for {entry.Name} using flags.");
-                        
-                        byte[] syntheticHeader = new byte[16];
-                        BitConverter.GetBytes(0x37435352).CopyTo(syntheticHeader, 0); // RSC7
-                        BitConverter.GetBytes(1).CopyTo(syntheticHeader, 4); // Version (Default 1?)
-                        
-                        // Handle potential distinct flag types or casts
-                        uint sysFlags = (uint)resEntry.SystemFlags;
-                        uint gfxFlags = (uint)resEntry.GraphicsFlags;
-                        
-                        BitConverter.GetBytes(sysFlags).CopyTo(syntheticHeader, 8);
-                        BitConverter.GetBytes(gfxFlags).CopyTo(syntheticHeader, 12);
-                        
-                        // Overwrite existing garbage header if size permits (Resource FileSize includes header)
-                        if (binaryResult.Length >= 16)
-                        {
-                            Buffer.BlockCopy(syntheticHeader, 0, binaryResult, 0, 16);
-                            return binaryResult;
-                        }
-                        else
-                        {
-                            // Fail safe: Prepend if too small (unlikely)
-                            byte[] combined = new byte[16 + binaryResult.Length];
-                            Buffer.BlockCopy(syntheticHeader, 0, combined, 0, 16);
-                            Buffer.BlockCopy(binaryResult, 0, combined, 16, binaryResult.Length);
-                            return combined;
-                        }
-                    }
-                    
+                    // A real resource entry never reaches here - its header is rebuilt from
+                    // the entry's own flags above. Only a binary entry that merely LOOKS
+                    // like a resource by extension gets this far, and for that the binary
+                    // bytes are the correct backup. Stamping a synthetic RSC7 header over
+                    // the first 16 bytes of a decompressed payload, as this used to do,
+                    // destroyed those bytes and made the restore differ from vanilla.
+
                     return binaryResult; // Return best effort (headerless)
                 }
                 else
