@@ -5,10 +5,11 @@
 
 This repository is a fork of [**CodeWalker** by dexyfex](https://github.com/dexyfex/CodeWalker) — the RPF archive explorer and world editor for Grand Theft Auto V. All of CodeWalker's original functionality is present and behaves as before; see the [upstream repository](https://github.com/dexyfex/CodeWalker) for documentation on the world view, explorer, project editor and file viewers.
 
-What this fork adds is twofold:
+What this fork adds:
 
 1. **[Two standalone applications](#part-1--the-applications)** — the *OIV Package Installer*, which installs mods for end users, and the *OIVS Packer*, which builds multi-component mod packages for authors.
 2. **[Fixes to the CodeWalker core](#part-2--changes-to-the-codewalker-core)** — a set of round-trip fidelity bugs in the metadata (`.ymt` / `.ytyp` / `.ymap`) read-write pipeline that were silently corrupting game files.
+3. **[Support for a new format](#part-3--a-new-format-shader-libraries-sga_awc)** — GTA V Enhanced's compiled shader libraries, which CodeWalker could not open at all.
 
 ---
 
@@ -205,13 +206,21 @@ Structural changes (adding or removing array items) still take the full rebuild 
 
 ---
 
-## Shader libraries (`sga_*.awc`)
+# Part 3 — A new format: shader libraries (`sga_*.awc`)
 
-GTA V Enhanced keeps its compiled shaders in `.awc` files — the same extension as audio wave containers, distinguished only by an `SGD2` magic. CodeWalker previously opened them as audio and failed. They now open in the shader viewer instead, and the file list labels them rather than showing the audio icon.
+Parts 1 and 2 add applications and repair existing behaviour. This part is neither: it is support for a game format CodeWalker could not open at all.
 
-The format reads and writes in full: browse effects, techniques and passes, inspect registers and constant buffers, export or replace individual `.cso` blobs, and export the whole library to XML and back. Round-tripping every shader library in a stock Enhanced install — 6 archives, 37,992 shaders — reproduces each one **byte for byte**, through both the binary path and a full XML export and re-import. Writing is gated behind Edit Mode, as everywhere else.
+GTA V Enhanced keeps its compiled shaders in `.awc` files — the same extension as audio wave containers, distinguished only by an `SGD2` magic. CodeWalker read the extension, tried to parse them as audio, and failed. They now open in the shader viewer instead, and the file list labels them rather than showing the audio icon.
 
-### Root signatures are preserved on import
+## What it does
+
+The format reads and writes in full: browse effects, techniques and passes, inspect registers and constant buffers, export or replace individual `.cso` blobs, and export the whole library to XML and back.
+
+Round-tripping every shader library in a stock Enhanced install — 6 archives, 37,992 shaders — reproduces each one **byte for byte**, through both the binary path and a full XML export and re-import. That is the property that makes writing safe: whatever the format holds that isn't modelled is carried rather than approximated. Writing is gated behind Edit Mode, as everywhere else.
+
+*Files: `AwcShaderFile.cs`, `FxcForm.cs`, `MetaXml.cs`, `ExploreForm.cs`*
+
+## Root signatures are preserved on import
 
 Every one of those 37,992 shaders embeds a root signature in an `RTS0` chunk, and the game builds its pipeline state objects from it. HLSL recompiled with dxc emits no `RTS0`, so dropping a freshly compiled blob into a slot leaves the pipeline without the signature the game expects: PSO creation fails, and the shader either silently never runs or takes the game down. The archive is perfectly valid either way, so there is nothing to find by inspecting it.
 
@@ -230,15 +239,19 @@ The refusal is the point. Silently writing a shader that fails pipeline creation
 
 ---
 
-## Known issues
+# Known issues
 
-All of these are **fail-safe**: the installer's rebuild verification refuses the write and reports it, rather than producing a corrupt file.
+**Part 2 — metadata.** Both of these are *fail-safe*: the rebuild verification refuses the write and reports it, rather than producing a corrupt file.
 
 - **Two PSO files render differently after a rebuild** — `animpostfx.ymt` and `junctions.pso`. Both are *stable fixed points*: they change once and then hold, so the data survives editing and repeated edits don't degrade it. The verification guard is stricter than it needs to be here and refuses them; accepting any file that passes a fixed-point check would unblock both.
 - **`shopping_cart_validation.ymt` decompiles to invalid XML.** Its element name is `CriminalCareerDefs::ShoppingCartItemCategoryLimits`, and `::` is illegal in an XML name. Fixing this requires a name-mangling scheme that round-trips in both directions, which is a decision about the XML format mod authors work with.
 
+**Part 3 — shader libraries.**
+
+- **The XML re-import path does not check root signatures.** Replacing a single `.cso` through the shader viewer is guarded; exporting a library to XML, editing, and importing it back reloads every `.cso` from disk without that check. That is the higher-volume route, so it is the one more likely to be used for a real mod. Until it is covered, replace shaders individually or make sure the blobs already carry the original signatures.
+
 ---
 
-## Credits
+# Credits
 
 CodeWalker is the work of **dexyfex** and its contributors. This fork adds the applications and core fixes described above; everything else belongs to the original project.
