@@ -794,10 +794,11 @@ namespace CodeWalker.OIVInstaller
                     {
                         int trimLen = 0;
                         MetaFormat format = XmlMeta.GetXMLFormat(virtualXmlName, out trimLen);
-                        newData = XmlMeta.GetData(xmlDoc, format, virtualXmlName,
-                            GetSchemaSource(fileEntry, data));
+                        var schemaSrc = GetSchemaSource(fileEntry, data);
+                        newData = XmlMeta.GetData(xmlDoc, format, virtualXmlName, schemaSrc);
 
-                        if (!VerifyMetaRebuild(newData, xmlDoc, fileName, out string why))
+                        if (!VerifyMetaRebuild(newData, xmlDoc, fileName,
+                                d => XmlMeta.GetData(d, format, virtualXmlName, schemaSrc), out string why))
                         {
                             Log($"  ERROR: {fileName} was NOT modified — {why}.");
                             Log($"         The original file has been left untouched to avoid corrupting it.");
@@ -1510,10 +1511,11 @@ namespace CodeWalker.OIVInstaller
                 {
                     int trimLen = 0;
                     MetaFormat format = XmlMeta.GetXMLFormat(virtualXmlName.ToLowerInvariant(), out trimLen);
-                    newBytes = XmlMeta.GetData(xmlDoc, format, virtualXmlName,
-                        GetSchemaSource(fileEntry, fileData));
+                    var schemaSrc = GetSchemaSource(fileEntry, fileData);
+                    newBytes = XmlMeta.GetData(xmlDoc, format, virtualXmlName, schemaSrc);
 
-                    if (!VerifyMetaRebuild(newBytes, xmlDoc, fileName, out string why))
+                    if (!VerifyMetaRebuild(newBytes, xmlDoc, fileName,
+                            d => XmlMeta.GetData(d, format, virtualXmlName, schemaSrc), out string why))
                     {
                         Log($"  ERROR: {fileName} was NOT modified — {why}.");
                         Log($"         The original file has been left untouched to avoid corrupting it.");
@@ -1610,6 +1612,12 @@ namespace CodeWalker.OIVInstaller
         /// </summary>
         private bool VerifyMetaRebuild(byte[] rebuilt, XmlDocument intended, string fileName, out string reason)
         {
+            return VerifyMetaRebuild(rebuilt, intended, fileName, null, out reason);
+        }
+
+        private bool VerifyMetaRebuild(byte[] rebuilt, XmlDocument intended, string fileName,
+            Func<XmlDocument, byte[]> rebuildAgain, out string reason)
+        {
             reason = null;
             if (rebuilt == null || rebuilt.Length == 0) { reason = "rebuild produced no data"; return false; }
 
@@ -1632,12 +1640,121 @@ namespace CodeWalker.OIVInstaller
             try { after = new XmlDocument(); after.LoadXml(check); }
             catch (Exception ex) { reason = "the rebuilt file produced invalid XML (" + ex.Message + ")"; return false; }
 
-            if (!XmlEquivalent(intended.DocumentElement, after.DocumentElement, out string where))
+            if (XmlEquivalent(intended.DocumentElement, after.DocumentElement, out string where))
+                return true;
+
+            // The comparison above holds the package's XML to CodeWalker's own spelling,
+            // and mod packages are usually authored against OpenIV, which spells some
+            // things differently. An empty array is <Variations type="NULL"/> there and
+            // <Variations/> here — same file, same bytes, and the guard was calling it
+            // data loss and refusing a perfectly good edit.
+            //
+            // Rather than hardcode which attributes are cosmetic — "type" is genuinely
+            // meaningful on the very same element when the array isn't empty — prove it:
+            // strip the disputed attributes, rebuild, and require byte-identical output.
+            // If the attribute changed nothing in the binary, it carried no data.
+            if (rebuildAgain != null && TryIgnoreInertAttributes(rebuilt, intended, after, rebuildAgain, out int dropped))
             {
-                reason = "the game's binary format could not be rebuilt without losing data (" + where + ")";
-                return false;
+                Log($"  Note: ignored {dropped} cosmetic attribute(s) that this file's format does not store" +
+                    $" (first: {where}).");
+                return true;
             }
+
+            reason = "the game's binary format could not be rebuilt without losing data (" + where + ")";
+            return false;
+        }
+
+        /// <summary>
+        /// Second chance for a mismatch caused purely by XML dialect. Succeeds only when
+        /// every difference is an attribute present in the package's XML and absent from
+        /// the rebuilt file, on an element with no children or text, AND rebuilding
+        /// without those attributes produces byte-identical output — which is proof they
+        /// contributed nothing. Anything else still fails.
+        /// </summary>
+        private static bool TryIgnoreInertAttributes(byte[] rebuilt, XmlDocument intended, XmlDocument after,
+            Func<XmlDocument, byte[]> rebuildAgain, out int dropped)
+        {
+            dropped = 0;
+            var candidates = new List<string>();   // xpath-free: index path to the attribute
+            if (!CollectExtraAttributes(intended.DocumentElement, after.DocumentElement, "", candidates))
+                return false;
+            if (candidates.Count == 0) return false;
+
+            var canon = (XmlDocument)intended.CloneNode(true);
+            foreach (var path in candidates)
+            {
+                var parts = path.Split('|');
+                var node = WalkIndexPath(canon.DocumentElement, parts, out string attrName);
+                if (node?.Attributes?.GetNamedItem(attrName) == null) return false;
+                node.Attributes.RemoveNamedItem(attrName);
+                dropped++;
+            }
+
+            byte[] again;
+            try { again = rebuildAgain(canon); }
+            catch { return false; }
+            if (again == null || again.Length != rebuilt.Length) return false;
+            for (int i = 0; i < again.Length; i++) if (again[i] != rebuilt[i]) return false;
+
+            // bytes unchanged, so nothing was lost; the rest still has to line up
+            return XmlEquivalent(canon.DocumentElement, after.DocumentElement, out _);
+        }
+
+        /// <summary>
+        /// Walks both trees and records attributes that exist only in <paramref name="a"/>,
+        /// on childless, textless elements. Returns false the moment any OTHER kind of
+        /// difference turns up, so a real loss can never be explained away as dialect.
+        /// </summary>
+        private static bool CollectExtraAttributes(XmlNode a, XmlNode b, string path, List<string> found)
+        {
+            if (a == null || b == null) return a == b;
+            if (!string.Equals(a.Name, b.Name, StringComparison.Ordinal)) return false;
+
+            var ae = Elements(a); var be = Elements(b);
+            bool leaf = ae.Count == 0;
+
+            int bc = b.Attributes?.Count ?? 0;
+            for (int i = 0; i < (a.Attributes?.Count ?? 0); i++)
+            {
+                var at = a.Attributes[i];
+                var bt = b.Attributes?.GetNamedItem(at.Name);
+                if (bt != null)
+                {
+                    if (!ValuesMatch(at.Value, bt.Value)) return false;
+                    continue;
+                }
+                // only an EMPTY element may shed an attribute; anything carrying content
+                // that lost an attribute is a real change
+                if (!leaf || !string.IsNullOrWhiteSpace(a.InnerText)) return false;
+                found.Add(path + "|@" + at.Name);
+            }
+            // an attribute that appeared out of nowhere is never dialect
+            for (int i = 0; i < bc; i++)
+                if (a.Attributes?.GetNamedItem(b.Attributes[i].Name) == null) return false;
+
+            if (ae.Count != be.Count) return false;
+            if (leaf)
+                return ValuesMatch((a.InnerText ?? "").Trim(), (b.InnerText ?? "").Trim());
+
+            for (int i = 0; i < ae.Count; i++)
+                if (!CollectExtraAttributes(ae[i], be[i], path + "|" + i, found)) return false;
             return true;
+        }
+
+        private static XmlNode WalkIndexPath(XmlNode root, string[] parts, out string attrName)
+        {
+            attrName = null;
+            var node = root;
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrEmpty(part)) continue;
+                if (part.StartsWith("@")) { attrName = part.Substring(1); break; }
+                if (!int.TryParse(part, out int idx)) return null;
+                var kids = Elements(node);
+                if (idx < 0 || idx >= kids.Count) return null;
+                node = kids[idx];
+            }
+            return attrName == null ? null : node;
         }
 
         /// <summary>Structural XML comparison: element names, attributes and text,
